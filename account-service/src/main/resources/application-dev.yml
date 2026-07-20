@@ -1,0 +1,31 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${ACCOUNT_DB_HOST:localhost}:${ACCOUNT_DB_PORT:5442}/${ACCOUNT_DB_NAME:account_db}
+    username: ${ACCOUNT_DB_USER:account}
+    password: ${ACCOUNT_DB_PASSWORD:account}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+management:
+  # Nome da propriedade mudou no Spring Boot 4.1 (management.otlp.tracing.endpoint da linha 3.x
+  # não existe mais) — sem isso o exportador de traces fica sem endpoint configurado e nenhum
+  # span sai para o otel-collector/Jaeger, silenciosamente.
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        otlp:
+          enabled: false # métricas são expostas via /actuator/prometheus (scrape), não push OTLP
+  tracing:
+    sampling:
+      probability: 1.0

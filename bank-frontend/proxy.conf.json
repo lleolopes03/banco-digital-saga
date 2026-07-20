@@ -1,0 +1,21 @@
+{
+  "/api/transfers": {
+    "target": "http://localhost:8082",
+    "secure": false,
+    "changeOrigin": true,
+    "logLevel": "debug"
+  },
+  "/ws": {
+    "target": "http://localhost:8082",
+    "ws": true,
+    "secure": false,
+    "changeOrigin": true,
+    "logLevel": "debug"
+  },
+  "/api": {
+    "target": "http://localhost:8081",
+    "secure": false,
+    "changeOrigin": true,
+    "logLevel": "debug"
+  }
+}

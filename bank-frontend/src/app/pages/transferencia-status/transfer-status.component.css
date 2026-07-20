@@ -1,0 +1,151 @@
+.status-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-3);
+}
+
+.status-card {
+  width: 100%;
+  max-width: 420px;
+  padding: var(--spacing-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+}
+
+.status-card h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.connection-badge {
+  margin: 0;
+  align-self: flex-start;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-success);
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+}
+
+.connection-badge.polling {
+  color: var(--color-warning);
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  padding: 0.6rem 0;
+  position: relative;
+}
+
+.step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 15px;
+  top: 2.2rem;
+  width: 2px;
+  height: calc(100% - 1.6rem);
+  background: var(--color-border);
+}
+
+.step-marker {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 700;
+  background: var(--color-surface);
+  border: 2px solid var(--color-border);
+  color: var(--color-text-muted);
+  z-index: 1;
+}
+
+.step-label {
+  font-size: 0.95rem;
+  color: var(--color-text-muted);
+}
+
+.step-pending .step-marker {
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.step-active .step-marker {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.step-active .step-label {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.step-done .step-marker {
+  border-color: var(--color-success);
+  background: var(--color-success);
+  color: #fff;
+}
+
+.step-done .step-label {
+  color: var(--color-text);
+}
+
+.step-error .step-marker {
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.step-error .step-label {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.pulse {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.alert-success {
+  background: #f0fdf4;
+  color: var(--color-success);
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius);
+  padding: var(--spacing-2) var(--spacing-3);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.alert-error {
+  background: #fef2f2;
+  color: var(--color-danger);
+  border: 1px solid #fecaca;
+  border-radius: var(--radius);
+  padding: var(--spacing-2) var(--spacing-3);
+  font-size: 0.875rem;
+}

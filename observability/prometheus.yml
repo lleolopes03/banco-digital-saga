@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 5s
+
+# account-service, transfer-service e antifraud-service rodam como processo local
+# (./mvnw spring-boot:run -Dspring-boot.run.profiles=dev), não como container — por isso o alvo
+# é host.docker.internal (resolvido pelo Docker Desktop para o host), não o nome de um serviço
+# do compose. Portas conforme README (8081/8082/8083).
+scrape_configs:
+  - job_name: account-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+
+  - job_name: transfer-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8082"]
+
+  - job_name: antifraud-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8083"]

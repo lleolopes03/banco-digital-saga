@@ -1,0 +1,570 @@
+# Banco Digital — Transferências com Saga Pattern
+
+[![CI](https://github.com/lleolopes03/banco-digital-saga/actions/workflows/ci.yml/badge.svg)](https://github.com/lleolopes03/banco-digital-saga/actions/workflows/ci.yml)
+
+Simulação de um banco digital com contas, depósitos e transferências. Toda transferência
+é orquestrada por uma saga: reserva de saldo → checagem antifraude → confirmação de débito →
+crédito no destinatário. Falhas em qualquer etapa disparam transações compensatórias que
+devolvem o dinheiro à conta de origem (rollback via saga, não via transação de banco de dados).
+
+Três microsserviços Spring Boot se coordenam via Kafka (padrão Outbox) sem nenhuma chamada
+síncrona entre si, um frontend Angular acompanha o progresso da saga em tempo real via
+WebSocket/STOMP, e todo o sistema é validado a cada push por um pipeline de CI que sobe
+Postgres/Kafka/Redis efêmeros via Testcontainers — sem depender de nenhum ambiente Docker
+local.
+
+## Demonstração
+
+Uma transferência, do formulário até a conclusão — e uma segunda transferência acima do limite
+antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no frontend:
+
+![Demonstração: transferência com acompanhamento em tempo real via WebSocket, sucesso e compensação](docs/demo-transferencia.gif)
+
+## Stack
+
+- **Backend**: Java 21, Spring Boot 4.1 (o Initializr não oferece mais a linha 3.x — ver nota
+  abaixo), Maven, PostgreSQL, Flyway, Kafka (modo KRaft), Redis, Resilience4j, WebSocket/STOMP
+- **Frontend**: Angular 19 standalone, TypeScript, `@stomp/stompjs` (acompanhamento da saga em
+  tempo real), ESLint
+- **Testes**: JUnit 5, Mockito, Testcontainers (postgresql, kafka, redis), Karma/Jasmine
+  (frontend), um módulo `e2e-tests` dedicado que sobe os três serviços da saga na mesma JVM
+  contra infraestrutura real
+- **Observabilidade**: OpenTelemetry (tracing distribuído via otel-collector → Jaeger) +
+  Micrometer/Prometheus (métricas) + Grafana (dashboard)
+- **CI/CD**: GitHub Actions (lint, testes com containers efêmeros, build de imagens Docker,
+  deploy no Railway — ver seção [CI/CD](#cicd) abaixo), Spotless (Java), ESLint (frontend)
+- **Infra local**: Docker Compose
+
+> **Nota sobre a versão do Spring Boot**: a stack original pedia Spring Boot 3.x, mas o
+> start.spring.io não gera mais projetos nessa linha (mínimo atual é 4.0). Optou-se por usar a
+> versão atual (4.1.0) em vez de fixar manualmente uma versão fora de suporte do initializr.
+
+## Arquitetura
+
+```mermaid
+flowchart TB
+    FE["bank-frontend (Angular)"]
+    TR["transfer-service<br/>(orquestrador da saga)"]
+    AC["account-service<br/>(contas, saldo, extrato)"]
+    AF["antifraud-service<br/>(regras de fraude)"]
+    NT["notification-service<br/>(avisos ao usuário)"]
+    KAFKA[("Kafka<br/>(eventos assíncronos, padrão Outbox)")]
+
+    FE -- "HTTP: login, POST /api/transfers" --> AC
+    FE -- "HTTP: POST /api/transfers, GET status" --> TR
+    FE == "WebSocket/STOMP:<br/>progresso da saga em tempo real" ==> TR
+
+    TR -- "reserva de saldo / débito" --> KAFKA
+    KAFKA -- "TransferReserved" --> AC
+    KAFKA -- "checagem antifraude" --> AF
+    AF -- "AntiFraudApproved/Rejected" --> KAFKA
+    AC -- "DebitConfirmed / CreditConfirmed" --> KAFKA
+    KAFKA -- "eventos consumidos" --> TR
+    KAFKA -- "notifica resultado" --> NT
+
+    style FE fill:#1a56db,color:#fff
+    style TR fill:#7c3aed,color:#fff
+    style AC fill:#0891b2,color:#fff
+    style AF fill:#dc2626,color:#fff
+    style NT fill:#6b7280,color:#fff
+    style KAFKA fill:#16a34a,color:#fff
+```
+
+Cada serviço da saga tem seu próprio PostgreSQL. Redis é usado por `account-service` e
+`transfer-service` para cache/idempotência/lock da saga, rate limiting e blacklist de logout do
+JWT. Os três serviços da saga exportam traces via OpenTelemetry para um otel-collector, que
+repassa pro Jaeger — e expõem métricas Prometheus em `/actuator/prometheus`, visualizadas num
+dashboard Grafana (ver "Tracing distribuído da saga" mais abaixo). A conexão WebSocket/STOMP do
+frontend com o `transfer-service` é autenticada por JWT no frame `CONNECT` (não no handshake
+HTTP, que não suporta header customizado) e autorizada por assinatura — só quem é dono da conta
+de origem/destino pode acompanhar aquela transferência específica.
+
+### Fluxo da saga de transferência
+
+1. **Reserva de saldo** — `transfer-service` pede ao `account-service` para reservar o valor
+   na conta de origem.
+2. **Checagem antifraude** — `transfer-service` publica um evento no Kafka para o
+   `antifraud-service` avaliar a transferência.
+3. **Confirmação de débito** — se aprovado, `transfer-service` confirma o débito na conta de
+   origem.
+4. **Crédito no destinatário** — `account-service` credita a conta de destino.
+5. **Compensação (rollback)** — se qualquer etapa falhar (reserva, antifraude ou crédito), o
+   `transfer-service` dispara uma transação compensatória que devolve o valor reservado/debitado
+   à conta de origem. `notification-service` informa o usuário do resultado (sucesso ou
+   estorno).
+
+## Estrutura do repositório
+
+```
+/account-service        Spring Boot — contas, saldo, extrato (Dockerfile próprio)
+/transfer-service        Spring Boot — orquestrador da saga + WebSocket/STOMP (Dockerfile próprio)
+/antifraud-service       Spring Boot — validação de regras de fraude (Dockerfile próprio)
+/notification-service    Spring Boot — notificações (Anthropic API / Z-API no futuro)
+/bank-frontend            Angular — UI (Dockerfile próprio, build servido via nginx)
+/e2e-tests                Harness de teste ponta a ponta da saga (happy path + compensação),
+                          roda os três serviços da saga na mesma JVM contra infra real
+/docs                     Assets de portfólio (gif de demonstração)
+/.github/workflows/ci.yml Pipeline de CI/CD (ver seção "CI/CD" abaixo)
+docker-compose.yml        Infra local (Kafka, Postgres x4, Redis, Jaeger, Prometheus, Grafana)
+.env.example               Variáveis de ambiente usadas pelos serviços
+```
+
+Cada `*-service` segue a mesma organização de pacotes:
+
+```
+src/main/java/com/bancodigital/<servico>/
+├── domain/            entidades e regras de domínio (vazio por enquanto)
+├── application/       casos de uso / services
+├── infrastructure/
+│   ├── persistence/    repositories JPA
+│   └── messaging/       producers/consumers Kafka
+└── web/
+    ├── controller/
+    └── dto/
+```
+
+## Subindo o ambiente
+
+### 1. Infraestrutura
+
+Copie `.env.example` para `.env` e ajuste se necessário, depois:
+
+```bash
+docker compose up -d
+```
+
+Isso sobe:
+
+| Serviço | Porta |
+|---|---|
+| Kafka (KRaft) | `9092` |
+| PostgreSQL (account) | `5442` (db `account_db`) |
+| PostgreSQL (transfer) | `5443` (db `transfer_db`) |
+| PostgreSQL (antifraud) | `5434` (db `antifraud_db`) |
+| PostgreSQL (notification) | `5435` (db `notification_db`) |
+| Redis | `6379` |
+| Jaeger UI | `16686` |
+| otel-collector | `4317` (OTLP gRPC) / `4318` (OTLP HTTP) — quem recebe traces dos serviços agora, repassa pro Jaeger internamente |
+| Prometheus | `9090` |
+| Grafana | `3000` (usuário `admin`/senha `admin`, ou acesso anônimo como Viewer) |
+
+> A stack original listava apenas 3 bancos Postgres (account/transfer/antifraud). Foi
+> adicionado um 4º (`postgres-notification`) porque o `notification-service` também recebeu
+> Spring Data JPA + PostgreSQL nas dependências e precisa de um banco próprio para subir no
+> profile `dev`. Remova-o se o `notification-service` não precisar persistir dados.
+
+> **Nota sobre portas do Postgres**: `account` e `transfer` usariam `5432`/`5433` por padrão,
+> mas nesta máquina já existe um PostgreSQL nativo do Windows ocupando essas duas portas (o
+> mesmo problema documentado no projeto `convite_casamento` vizinho). Por isso eles foram
+> remapeados para `5442`/`5443`. Se a sua máquina não tiver esse conflito, ajuste livremente em
+> `docker-compose.yml`, `.env.example` e nos respectivos `application-dev.yml`.
+
+### 2. Backends
+
+Cada serviço roda no profile `dev` (aponta para os containers acima):
+
+```bash
+cd account-service
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+Repita para `transfer-service`, `antifraud-service` e `notification-service` (portas `8081` a
+`8084`, respectivamente).
+
+Para rodar os testes (usa Testcontainers via `@ServiceConnection`, não depende do
+`docker compose up`):
+
+```bash
+./mvnw test
+```
+
+### 3. Frontend
+
+```bash
+cd bank-frontend
+npm install
+npm run dev
+```
+
+Sobe em `http://localhost:4200`, com proxy configurado (`proxy.conf.json`) para `account-service`
+(`:8081`) e `transfer-service` (`:8082`, incluindo o endpoint WebSocket `/ws`) — evita precisar de
+CORS em qualquer um dos dois serviços. Rotas disponíveis:
+
+| Rota | Protegida por `authGuard`? | Descrição |
+|---|---|---|
+| `/login` | Não | Formulário reativo, redireciona para `/dashboard` no sucesso |
+| `/dashboard` | Sim | Saldo atual + atalhos para extrato e nova transferência |
+| `/extrato` | Sim | Extrato paginado, filtro por período, cores por tipo de movimentação |
+| `/transferencia` | Sim | Formulário de nova transferência |
+| `/transferencia/:transferId/status` | Sim | Stepper visual acompanhando a saga ao vivo (ver seção abaixo) |
+
+Testes unitários (Karma/Jasmine): `npm test`. Lint (ESLint): `npm run lint` (ou `ng lint`).
+
+## Resiliência: circuit breaker na validação síncrona de saldo
+
+A comunicação entre serviços é majoritariamente assíncrona via Kafka (resiliente por natureza:
+uma partição sem consumidor não derruba quem publica). A única chamada síncrona do sistema é uma
+otimização em `transfer-service`: antes de abrir uma saga inteira (`POST /api/transfers`), ele
+consulta `GET /api/accounts/{id}/balance` no `account-service` via `RestClient`, para recusar de
+cara (`422 Unprocessable Entity`) um caso óbvio de saldo insuficiente sem gastar uma saga completa
+com isso.
+
+Essa chamada é protegida por um circuit breaker Resilience4j (`AccountServiceClient`, em
+`transfer-service/src/main/java/com/bancodigital/transfer/infrastructure/client/`):
+
+- **Fechado (padrão)**: chama o account-service normalmente.
+- **Aberto** (`transfer-service/src/main/resources/application.yml`, instância `accountService`:
+  janela de 10 chamadas, abre com 50% de falha, fica aberto por 10s): pula direto para o
+  fallback, **sem** tentar a chamada de rede.
+- **Fallback (`balanceCheckFallback`)**: nunca bloqueia o usuário. Ele simplesmente devolve
+  "saldo desconhecido" e deixa a saga ser criada normalmente — a validação definitiva de saldo é
+  a reserva assíncrona (etapa 1 da saga), que independe desta chamada síncrona.
+
+Métricas em tempo real:
+
+```
+GET http://localhost:8082/actuator/health           # mostra o CircuitBreakerHealthIndicator
+GET http://localhost:8082/actuator/circuitbreakers   # estado, contagem de chamadas, taxa de falha
+```
+
+### Teste manual: derrubando o account-service e observando o circuito abrir
+
+Neste repositório o `account-service` roda como processo local (`./mvnw spring-boot:run`), não
+como container — ajuste o passo 2 caso você tenha containerizado os serviços.
+
+1. Suba a infraestrutura (`docker compose up -d`) e os quatro serviços em profile `dev`
+   (`account-service` na porta `8081`, `transfer-service` na `8082`).
+2. Confirme o circuito fechado:
+   ```bash
+   curl http://localhost:8082/actuator/circuitbreakers
+   # "accountService": { "state": "CLOSED", ... }
+   ```
+3. Derrube o `account-service` (Ctrl+C no terminal onde ele roda, ou `docker stop
+   <container-do-account-service>` se estiver containerizado).
+4. Dispare pelo menos 10 transferências para forçar a avaliação da janela deslizante:
+   ```bash
+   for i in $(seq 1 10); do
+     curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8082/api/transfers \
+       -H "Content-Type: application/json" \
+       -d '{"accountOrigemId":"'$(uuidgen)'","accountDestinoId":"'$(uuidgen)'","valor":100.00}'
+   done
+   ```
+   Todas devem responder `202 Accepted` — o fallback deixa a saga seguir mesmo sem o
+   account-service no ar.
+5. Confirme o circuito aberto:
+   ```bash
+   curl http://localhost:8082/actuator/circuitbreakers
+   # "accountService": { "state": "OPEN", "failureRate": "100.0%", ... }
+   ```
+6. Suba o `account-service` de novo, espere ~10s (`waitDurationInOpenState`) e repita o passo 2:
+   o estado deve ter voltado para `HALF_OPEN` e, após chamadas bem-sucedidas, para `CLOSED`.
+
+O mesmo comportamento (chamada normal → falhas abrindo o circuito → fallback sem bloquear a saga
+→ half-open tentando a chamada real de novo) é coberto automaticamente por
+`TransferServiceCircuitBreakerTest` (WireMock simulando o account-service), sem precisar derrubar
+nada manualmente.
+
+## Autenticação
+
+`account-service` e `transfer-service` agora exigem um JWT válido em toda rota que não seja
+`/api/auth/**` ou `/actuator/health` (`SecurityConfig` de cada serviço). O `antifraud-service` e o
+`notification-service` continuam sem autenticação nesta fatia — nenhum dos dois expõe endpoint
+HTTP consumido pelo frontend.
+
+### Login, logout e blacklist
+
+- **`POST /api/auth/login`** (só existe no `account-service`, dono da tabela `users`): recebe
+  `email`/`senha`, valida a senha com BCrypt e devolve um JWT HS256 de **15 minutos** com claims
+  `sub` (userId), `accountId` e `jti` (id único do token).
+- **`POST /api/auth/logout`**: extrai o `jti` e a expiração do token recebido e grava
+  `jwt:blacklist:<jti>` no Redis com TTL igual ao tempo de validade **restante** do token — a
+  entrada some sozinha do Redis exatamente quando o token expiraria de qualquer forma.
+- **`JwtAuthenticationFilter`** (duplicado em `account-service` e `transfer-service`, mesma
+  convenção de duplicação entre serviços já usada para `OutboxEvent`/`ProcessedEvent`): valida a
+  assinatura do token e, antes de autorizar, confere se o `jti` está na blacklist do Redis. Os
+  dois serviços apontam para a mesma instância Redis (`docker-compose.yml`) e compartilham o
+  segredo de assinatura via `JWT_SECRET`, então um logout feito no `account-service` também
+  invalida o token no `transfer-service` imediatamente.
+
+### Autorização por conta
+
+Todo endpoint escopado por conta valida que o `accountId` do token bate com o `accountId` da
+requisição, devolvendo `403` caso contrário:
+
+| Serviço | Endpoint | Conta verificada |
+|---|---|---|
+| account-service | `GET/POST /api/accounts/{id}...` (balance, deposits, statement, busca por id) | `{id}` da URL |
+| transfer-service | `POST /api/transfers` | `accountOrigemId` do corpo |
+
+`GET /api/transfers/{id}` continua exigindo apenas um JWT válido (não verifica se o chamador é
+dono da conta de origem/destino da saga) — ver "Próximos passos" abaixo.
+
+### Próximos passos
+
+- **Refresh token**: esta fatia usa só um access token de 15 minutos, sem refresh — o usuário
+  precisa logar de novo quando expirar. Ainda não implementado.
+- **Ownership em `GET /api/transfers/{id}`**: hoje qualquer usuário autenticado pode consultar
+  qualquer saga pelo id, sem checar se é a conta de origem/destino.
+- **Signup**: não há endpoint de cadastro de usuário nesta fatia — `User` só é criado diretamente
+  no banco (ver testes `*IT`). `POST /api/accounts` exige um JWT válido, mas não precisa ser de um
+  usuário já vinculado àquela conta (abrir uma nova conta não tem `{accountId}` para validar
+  contra).
+
+## Transferência em tempo real (WebSocket/STOMP)
+
+A tela de transferência (`/transferencia`) acompanha o progresso da saga ao vivo, sem polling —
+é o maior diferencial visual do projeto (ver GIF na seção "Demonstração" no topo deste README).
+
+### Backend
+
+`transfer-service` expõe um endpoint STOMP em `/ws` (`WebSocketConfig`, broker simples em
+`/topic`). Depois de cada transição de estado da `SagaInstance` (nos mesmos pontos onde os
+consumers Kafka já persistiam o novo status — Fatias 7 e 8), o `SagaOrchestratorService` publica
+um `SagaStatusUpdate` (status atual + `failureReason`, se houver) em
+`/topic/transfers/{transferId}` via `SagaStatusPublisher`. A publicação é best-effort — se
+ninguém estiver assinando naquele instante, a mensagem se perde e o fallback de polling do
+frontend (abaixo) cobre o caso.
+
+**Autenticação e autorização da conexão**: um WebSocket nativo do browser não permite anexar um
+header `Authorization` no handshake HTTP inicial — por isso `/ws/**` é liberado no
+`SecurityConfig`, e a autenticação de verdade acontece no frame STOMP `CONNECT`
+(`StompAuthChannelInterceptor`), lendo o JWT de um header STOMP nativo (não HTTP). O mesmo
+interceptor autoriza cada `SUBSCRIBE`: só quem é dono da conta de origem ou destino daquela
+transferência pode assinar seu tópico.
+
+### Frontend
+
+`TransferStatusService` encapsula a conexão STOMP (`@stomp/stompjs`) atrás de um
+`Observable<SagaStatusUpdate>`. `TransferStatusComponent` monta um stepper com 5 passos
+(reservando → antifraude → débito → crédito → concluída); cada mensagem recebida atualiza o
+estado visual do passo correspondente, e uma falha/compensação pinta o passo relevante de
+vermelho com o `failureReason` recebido. A conexão fecha sozinha (`client.deactivate()`) quando a
+saga chega a um estado terminal (`COMPLETED`/`FAILED`) ou quando o componente é destruído — nunca
+fica aberta além do necessário.
+
+**Fallback de polling**: se a conexão WebSocket cair ou nunca se estabelecer, o componente
+detecta (erro ou `complete()` sem status terminal) e passa a consultar
+`GET /api/transfers/{id}` a cada 2 segundos até atingir um status terminal — a UI mostra
+claramente qual dos dois modos está ativo ("Acompanhando em tempo real" vs. "Atualizando a cada
+2s").
+
+## Tracing distribuído da saga (OpenTelemetry)
+
+Uma transferência atravessa `account-service` → Kafka → `transfer-service` → Kafka →
+`antifraud-service` → Kafka → `transfer-service` → Kafka → `account-service` → Kafka →
+`transfer-service`, seis vezes cruzando a fronteira assíncrona do Kafka. Sem propagação
+explícita de contexto, cada hop viraria um trace novo e desconectado no Jaeger — o objetivo
+desta fatia é que a saga inteira apareça como **um único trace**, do `POST /api/transfers` até a
+etapa final (conclusão ou compensação).
+
+### Arquitetura
+
+```
+account-service ──┐
+transfer-service ─┼── OTLP (HTTP :4318) ──► otel-collector ──► Jaeger (:16686)
+antifraud-service ─┘                              │
+                                                    ▼
+                                        (só traces — métricas não passam
+                                         pelo collector, ver abaixo)
+
+account-service ──┐
+transfer-service ─┼── scrape /actuator/prometheus ──► Prometheus (:9090) ──► Grafana (:3000)
+antifraud-service ─┘
+```
+
+O `otel-collector` (`otel/opentelemetry-collector-contrib`, config em
+`observability/otel-collector-config.yaml`) existe como uma camada extra entre os serviços e o
+Jaeger — recebe OTLP de todos os três e repassa em lote, em vez de cada serviço falar direto com
+o Jaeger. Métricas usam um caminho totalmente separado (scrape do Prometheus em
+`/actuator/prometheus`, não push OTLP) — mais simples de depurar e é o modelo padrão do
+ecossistema Prometheus/Grafana.
+
+> **Pegadinha do Spring Boot 4.1**: a propriedade `management.otlp.tracing.endpoint` (válida até
+> a linha 3.x) foi renomeada para `management.opentelemetry.tracing.export.otlp.endpoint`. Usar o
+> nome antigo não dá erro nenhum — o app sobe normalmente e simplesmente não exporta trace
+> nenhum, silenciosamente. Ver `application-dev.yml` dos três serviços.
+
+### Propagação através do Kafka (padrão Outbox)
+
+Cada evento gravado no Outbox (`OutboxEvent`, ver Fatia 4) agora carrega uma coluna
+`trace_context` com o `traceparent` (W3C) capturado no momento da criação do evento — **nunca**
+no `OutboxPublisherScheduler`, que roda numa thread de scheduling sem nenhuma relação com a
+transação original. A classe `SagaObservability` (duplicada por serviço, mesma convenção já
+usada para `OutboxEvent`/`ProcessedEvent`) concentra essa lógica:
+
+- `traceparentAtual()` — injeta `Context.current()` num carrier `Map<String,String>` via
+  `OpenTelemetry.getPropagators().getTextMapPropagator()` e devolve a string `traceparent`.
+  Chamada dentro do método de negócio que cria o `OutboxEvent` (ex.: `AccountService.criarOutboxEvent`).
+- `injetarHeader(record, traceContext)` — copia essa string (já capturada, sem reinjetar) como
+  header Kafka literal, chamada pelo `OutboxPublisherScheduler` na hora de publicar.
+- `executarEtapa(etapa, traceparentRecebido, atributos, ação)` — do lado do consumer: extrai o
+  `Context` do header `traceparent` recebido (`@Header(value = "traceparent", required = false)`
+  em todo `@KafkaListener`), abre um span `saga.<etapa>` como filho desse contexto, seta os
+  atributos, roda a ação dentro do escopo do span, e registra a duração num Timer Micrometer —
+  tudo num só lugar, então tracing e métricas de latência nunca ficam dessincronizados.
+
+Se o header vier ausente/nulo (evento antigo, ou publicado fora desse fluxo), o span simplesmente
+começa um trace novo em vez de falhar — a propagação é best-effort, nunca bloqueia a saga.
+
+### Spans customizados
+
+| Span | Serviço | Onde |
+|---|---|---|
+| `saga.reserve` | account-service | `TransferRequestedConsumer` → `AccountService.reservarSaldo` |
+| `saga.antifraud_check` | antifraud-service | `TransferReservedConsumer` → `AntiFraudService.avaliar` |
+| `saga.debit` | account-service | `DebitConfirmationRequestedConsumer` → `AccountService.confirmarDebito` |
+| `saga.credit` | account-service | `CreditRequestedConsumer` → `AccountService.creditarPorTransferencia` |
+| `saga.compensate` | account-service | `TransferCompensateConsumer` → `liberarReserva`/`reverterDebito` (os dois cenários de compensação) |
+
+Cada um carrega os atributos `transferId` e `valor` (nunca CPF/nome — ver "Sanitização" abaixo).
+Os cinco consumers do `transfer-service` (que só orquestram, não executam a etapa de negócio em
+si) também propagam o trace e abrem spans próprios (`saga.orchestrate.reserve_ack`,
+`.antifraud_result`, `.debit_ack`, `.credit_result`, `.compensation_ack`) para que **nenhum** hop
+da saga quebre o trace — não só os cinco nomeados acima.
+
+### Sanitização
+
+Nenhum span/atributo customizado carrega `ownerName`/`ownerDocument` (CPF) ou dado de login
+(`email`/`senha`) — só IDs (`transferId`) e valores agregados (`valor`). Os spans HTTP
+auto-instrumentados (Spring MVC/RestClient, via `spring-boot-starter-opentelemetry`) seguem as
+convenções semânticas padrão do OTel (método, rota, status code) e não serializam corpo de
+requisição/resposta.
+
+### Métricas Prometheus
+
+Cada serviço expõe `/actuator/prometheus` (liberado no `SecurityConfig` do account-service e
+transfer-service, igual a `/actuator/health` — o Prometheus não carrega JWT nenhum ao fazer
+scrape):
+
+- `saga_transfers_total{status="COMPLETED"|"FAILED"}` — contador, incrementado no
+  `SagaOrchestratorService` exatamente nos pontos onde a state machine transiciona pra um estado
+  terminal (`processarCreditoConfirmado`, `processarReservaLiberada`, `processarDebitoRevertido`,
+  e o ramo `STARTED` de `processarTimeout`).
+- `saga_compensations_total{reason="LIMITE_EXCEDIDO"|"VELOCITY_EXCEDIDA"|"CONTA_BLOQUEADA"|"CONTA_DESTINO_BLOCKED"|"SAGA_TIMEOUT"|...}` —
+  contador, incrementado onde a compensação é decidida (`processarAntifraudeRejeitada`,
+  `processarCreditoFalhou`, `processarTimeout`).
+- `saga_step_duration_seconds{step="reserve"|"debit"|"credit"|"antifraud_check"|"compensate"|"orchestrate.*"}` —
+  histograma (`publishPercentileHistogram()`, necessário pro `histogram_quantile` do dashboard
+  funcionar), registrado dentro do mesmo `executarEtapa(...)` que abre o span.
+
+### Dashboard Grafana
+
+`observability/grafana-dashboard.json` — versionado no repo, provisionado automaticamente no
+Grafana via `observability/grafana/provisioning/` (datasource Prometheus + o dashboard em si,
+sem nenhum passo manual de import). Painéis:
+
+1. **Taxa de sucesso de sagas** — `COMPLETED / (COMPLETED + FAILED)` nos últimos 5 minutos.
+2. **Sagas concluídas vs falhas** (última hora).
+3. **Sagas compensadas por motivo** (pizza, `saga_compensations_total` agrupado por `reason`).
+4. **Latência p95 por etapa da saga** — `histogram_quantile(0.95, ...)` sobre
+   `saga_step_duration_seconds`, uma linha por `step`, agregando dados dos três serviços no
+   mesmo gráfico.
+5. **Sagas por status ao longo do tempo** (barras empilhadas).
+
+### Teste automatizado: `TracingContextPropagationTest`
+
+`account-service/src/test/java/.../infrastructure/observability/TracingContextPropagationTest.java`
+— Kafka real via Testcontainers. Abre um span de teste, captura o `traceparent` via
+`SagaObservability.traceparentAtual()`, publica uma mensagem com esse header (usando
+`injetarHeader`, o mesmo código de produção), consome com um `KafkaConsumer` cru, e verifica que
+o header `traceparent` chegou **byte a byte idêntico** ao produzido — a prova de que a
+propagação sobrevive a um round-trip real pelo Kafka, não só em memória.
+
+Requer `@AutoConfigureTracing` (`org.springframework.boot.micrometer.tracing.test.autoconfigure`):
+por padrão o Spring Boot desativa a exportação de tracing em testes (`@SpringBootTest`), pra
+nenhuma suíte tentar falar com um coletor OTLP de verdade sem pedir explicitamente — sem essa
+anotação, `getTextMapPropagator()` devolve um propagator no-op e o teste falha com
+`traceparent` nulo.
+
+### Teste manual: uma transferência, um trace, três serviços
+
+1. Suba a infraestrutura completa (`docker compose up -d` — agora inclui `otel-collector`,
+   `prometheus` e `grafana`) e os três serviços da saga em profile `dev`.
+2. Faça login e dispare uma transferência (ver exemplos de `curl` na seção "Autenticação" para
+   obter um token) — `POST http://localhost:8082/api/transfers`.
+3. Abra o Jaeger UI (http://localhost:16686), Service = `transfer-service`, Operation =
+   `http post /api/transfers`, **Find Traces**.
+4. Clique no trace. Confirme: **um único trace**, `Services 3`, com o waterfall
+   `saga.reserve` → `saga.orchestrate.reserve_ack` → `saga.antifraud_check` →
+   `saga.orchestrate.antifraud_result` → `saga.debit` → `saga.orchestrate.debit_ack` →
+   `saga.credit` → `saga.orchestrate.credit_result`, todos sob o mesmo `http post /api/transfers`.
+5. Para ver o caminho de compensação, dispare uma transferência acima de R$ 10.000 (rejeitada
+   pela `LimiteValorRule`) — o trace mostra `saga.antifraud_check` seguido de `saga.compensate`
+   em vez de `saga.debit`/`saga.credit`.
+6. Abra o Grafana (http://localhost:3000) → dashboard "Banco Digital Saga — Transferências" e
+   confirme que os painéis têm dados reais (não "No data").
+
+Essa verificação foi executada de ponta a ponta durante o desenvolvimento desta fatia — os
+traces reais (capturados via API do Jaeger, já que o print de tela não estava disponível na
+sessão) estão documentados em `observability/screenshots/README.md`, junto com um bug real
+encontrado nesse processo (Prometheus levando 401 do `SecurityConfig` da Fatia 13 — corrigido
+liberando `/actuator/prometheus`).
+
+## Antifraude
+
+Ainda não implementado como endpoint HTTP autenticável — o `antifraud-service` só participa da
+saga via Kafka (ver "Fluxo da saga de transferência" acima).
+
+## CI/CD
+
+Pipeline completo em [`.github/workflows/ci.yml`](.github/workflows/ci.yml), disparado a cada
+push e a cada pull request. Nenhum job depende do `docker-compose.yml` local — todo container
+(Postgres, Kafka, Redis) é efêmero, criado pelo próprio Testcontainers dentro do runner do
+GitHub Actions.
+
+```mermaid
+flowchart LR
+    subgraph Lint
+        L1[lint-java<br/>account/transfer/antifraud]
+        L2[lint-frontend]
+    end
+    subgraph Testes
+        T1[test-account-service]
+        T2[test-transfer-service]
+        T3[test-antifraud-service]
+        T4[test-frontend]
+    end
+    E2E["e2e-saga-tests<br/>TransferSagaHappyPathIT +<br/>TransferSagaCompensationIT"]
+    D[docker-build<br/>4 imagens, tag = SHA]
+    R["deploy-railway<br/>(só push na main)"]
+
+    T1 --> E2E
+    T2 --> E2E
+    T3 --> E2E
+    L1 --> D
+    L2 --> D
+    T1 --> D
+    T2 --> D
+    T3 --> D
+    T4 --> D
+    E2E --> D
+    D --> R
+```
+
+- **Lint/format**: `spotless:check` (Java, regras leves — import order, imports não usados,
+  espaço em branco) nos três serviços; `ng lint` (ESLint + `angular-eslint`) no frontend.
+- **Testes por serviço**: `./mvnw verify` roda unitários (Surefire) e de integração (Failsafe)
+  no mesmo job — cada serviço usa `@Testcontainers` + `@ServiceConnection` (ver
+  `AbstractIntegrationTest` de cada um) para subir Postgres/Kafka/Redis reais automaticamente,
+  sem nenhuma configuração extra de infra no runner. `bank-frontend` roda Karma/Jasmine em
+  `ChromeHeadless`.
+- **Gate final da saga (`e2e-saga-tests`)**: instala os três serviços como jar no repositório
+  Maven local do runner (`mvn install -DskipTests` — os testes de cada um já rodaram nos jobs
+  acima) e roda `mvn verify` no módulo `e2e-tests`, que sobe os três `ApplicationContext` Spring
+  na mesma JVM contra Postgres/Kafka/Redis via Testcontainers e executa
+  `TransferSagaHappyPathIT` e `TransferSagaCompensationIT` de ponta a ponta. **Se
+  `TransferSagaCompensationIT` quebrar, este job falha e nada depois dele roda** — nem o build de
+  imagens, nem o deploy. É a garantia mais importante do pipeline.
+- **Build de imagens**: só roda depois que lint + todos os testes + o gate da saga passarem.
+  Cada imagem (`account-service`, `transfer-service`, `antifraud-service`, `bank-frontend`) é
+  taggeada com o SHA do commit; em push na `main`, também publica no GitHub Container Registry
+  (`ghcr.io`, usando o `GITHUB_TOKEN` padrão do Actions — nenhum secret extra necessário só para
+  isso).
+- **Deploy (Railway)**: só em push na `main`, só depois de tudo acima ter passado. Depende do
+  secret `RAILWAY_TOKEN` (Settings → Secrets and variables → Actions no GitHub) — sem ele
+  configurado, o job registra um aviso e sai sem falhar, em vez de quebrar o pipeline.
+- **Sem secrets no repositório**: toda credencial (`JWT_SECRET` de produção, `RAILWAY_TOKEN`,
+  etc.) vem de GitHub Secrets. O único valor "sensível" versionado é um segredo JWT de
+  desenvolvimento explicitamente nomeado `...-desenvolvimento-nao-usar-em-producao` como default
+  de fallback local (`${JWT_SECRET:...}`), sobrescrito por variável de ambiente em qualquer
+  ambiente real.

@@ -1,0 +1,53 @@
+<div class="statement-page">
+  <header class="statement-header">
+    <h1>Extrato</h1>
+    <a class="btn btn-secondary" routerLink="/dashboard">Voltar</a>
+  </header>
+
+  <form class="filter-bar card" [formGroup]="filterForm" (ngSubmit)="applyFilter()" novalidate>
+    <div class="field">
+      <label for="de">De</label>
+      <input id="de" type="date" formControlName="de" />
+    </div>
+    <div class="field">
+      <label for="ate">Até</label>
+      <input id="ate" type="date" formControlName="ate" />
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn btn-primary">Filtrar</button>
+      <button type="button" class="btn btn-secondary" (click)="clearFilter()">Limpar</button>
+    </div>
+  </form>
+
+  @if (isLoading) {
+    <p class="status-message">Carregando extrato...</p>
+  } @else if (errorMessage) {
+    <p class="status-message error">{{ errorMessage }}</p>
+  } @else if (transactions.length === 0) {
+    <p class="status-message">Nenhuma movimentação encontrada no período.</p>
+  } @else {
+    <ul class="transaction-list">
+      @for (transaction of transactions; track transaction.id) {
+        <li class="transaction-item card" [class]="metaFor(transaction.type).cssClass">
+          <span class="transaction-icon" aria-hidden="true">{{ metaFor(transaction.type).icon }}</span>
+          <div class="transaction-details">
+            <span class="transaction-type">{{ metaFor(transaction.type).label }}</span>
+            <span class="transaction-description">{{ transaction.description }}</span>
+            <span class="transaction-date">{{ transaction.createdAt | date:'dd/MM/yyyy HH:mm' }}</span>
+          </div>
+          <span class="transaction-amount">{{ transaction.amount | currency:'BRL' }}</span>
+        </li>
+      }
+    </ul>
+
+    <div class="pagination">
+      <button class="btn btn-secondary" type="button" [disabled]="isFirstPage" (click)="goToPage(currentPage - 1)">
+        Anterior
+      </button>
+      <span class="pagination-info">Página {{ currentPage + 1 }} de {{ totalPages || 1 }}</span>
+      <button class="btn btn-secondary" type="button" [disabled]="isLastPage" (click)="goToPage(currentPage + 1)">
+        Próxima
+      </button>
+    </div>
+  }
+</div>

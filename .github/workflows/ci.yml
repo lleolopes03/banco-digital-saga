@@ -1,0 +1,300 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  NODE_VERSION: '22'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint / format — falha aqui não impede os outros jobs de rodar (fail-fast
+  # global desligado via needs explícito abaixo), mas bloqueia o build de
+  # imagens e o deploy.
+  # ---------------------------------------------------------------------------
+  lint-java:
+    name: Lint (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [account-service, transfer-service, antifraud-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: spotless:check
+        working-directory: ${{ matrix.service }}
+        run: chmod +x mvnw && ./mvnw -B spotless:check
+
+  lint-frontend:
+    name: Lint (bank-frontend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: bank-frontend/package-lock.json
+
+      - working-directory: bank-frontend
+        run: npm ci
+
+      - name: ESLint
+        working-directory: bank-frontend
+        run: npx ng lint
+
+  # ---------------------------------------------------------------------------
+  # Testes por serviço — cada job sobe seus próprios containers efêmeros
+  # (Postgres/Kafka/Redis) via Testcontainers, usando o Docker já disponível no
+  # runner hospedado. Nenhum depende do docker-compose.yml do repo.
+  # ---------------------------------------------------------------------------
+  test-account-service:
+    name: Test (account-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Unit + integration tests (Testcontainers)
+        working-directory: account-service
+        run: chmod +x mvnw && ./mvnw -B verify
+
+      - name: Publish test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: account-service-test-reports
+          path: |
+            account-service/target/surefire-reports
+            account-service/target/failsafe-reports
+          retention-days: 7
+
+  test-transfer-service:
+    name: Test (transfer-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Unit + integration tests (Testcontainers)
+        working-directory: transfer-service
+        run: chmod +x mvnw && ./mvnw -B verify
+
+      - name: Publish test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transfer-service-test-reports
+          path: |
+            transfer-service/target/surefire-reports
+            transfer-service/target/failsafe-reports
+          retention-days: 7
+
+  test-antifraud-service:
+    name: Test (antifraud-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Unit + integration tests (Testcontainers)
+        working-directory: antifraud-service
+        run: chmod +x mvnw && ./mvnw -B verify
+
+      - name: Publish test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: antifraud-service-test-reports
+          path: |
+            antifraud-service/target/surefire-reports
+            antifraud-service/target/failsafe-reports
+          retention-days: 7
+
+  test-frontend:
+    name: Test (bank-frontend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CHROME_BIN: /usr/bin/google-chrome-stable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: bank-frontend/package-lock.json
+
+      - working-directory: bank-frontend
+        run: npm ci
+
+      - name: Unit tests (Karma/ChromeHeadless)
+        working-directory: bank-frontend
+        run: npx ng test --watch=false --browsers=ChromeHeadless
+
+      - name: Production build
+        working-directory: bank-frontend
+        run: npx ng build --configuration production
+
+  # ---------------------------------------------------------------------------
+  # Gate final: roda TODOS os testes acumulados do módulo e2e-tests — hoje isso
+  # é TransferSagaHappyPathIT (Fatia 7) e TransferSagaCompensationIT (Fatia 8).
+  # Os três serviços entram aqui como dependência de biblioteca (jar "thin"),
+  # então precisam ser instalados no repositório Maven local do runner antes —
+  # os testes de CADA serviço já rodaram nos jobs acima (needs); aqui é só
+  # empacotamento, sem re-testar.
+  #
+  # Se TransferSagaCompensationIT quebrar, este job falha e docker-build /
+  # deploy-railway (que dependem dele) nunca rodam — essa é a garantia mais
+  # importante do pipeline.
+  # ---------------------------------------------------------------------------
+  e2e-saga-tests:
+    name: E2E saga gate (happy path + compensation)
+    needs: [test-account-service, test-transfer-service, test-antifraud-service]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Install account-service jar (biblioteca para o e2e-tests)
+        working-directory: account-service
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+
+      - name: Install antifraud-service jar (biblioteca para o e2e-tests)
+        working-directory: antifraud-service
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+
+      - name: Install transfer-service jar (biblioteca para o e2e-tests)
+        working-directory: transfer-service
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+
+      - name: TransferSagaHappyPathIT + TransferSagaCompensationIT
+        working-directory: e2e-tests
+        run: mvn -B verify
+
+      - name: Publish test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-saga-test-reports
+          path: e2e-tests/target/failsafe-reports
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Build de imagens — só roda depois que lint + testes + o gate da saga
+  # passarem. Tag sempre inclui o SHA do commit; push pro GHCR (usando o
+  # GITHUB_TOKEN já disponível, sem secret extra) só acontece em push na main.
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Docker build (${{ matrix.service }})
+    needs:
+      - lint-java
+      - lint-frontend
+      - test-account-service
+      - test-transfer-service
+      - test-antifraud-service
+      - test-frontend
+      - e2e-saga-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [account-service, transfer-service, antifraud-service, bank-frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image (push only on main)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/banco-digital-saga-${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/banco-digital-saga-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------
+  # Deploy no Railway — só em push na main, só depois de tudo acima ter
+  # passado. RAILWAY_TOKEN (Project Token, gerado em Railway → Project →
+  # Settings → Tokens) ainda não está configurado neste repositório: o job
+  # roda, detecta a ausência do secret e sai com um aviso em vez de falhar, até
+  # que o secret seja adicionado em Settings > Secrets and variables > Actions.
+  # ---------------------------------------------------------------------------
+  deploy-railway:
+    name: Deploy (Railway)
+    needs: docker-build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy services to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN não configurado — pulando deploy. Gere um Project Token em Railway (Project > Settings > Tokens) e adicione como secret em Settings > Secrets and variables > Actions para habilitar esta etapa."
+            exit 0
+          fi
+
+          npm install -g @railway/cli
+
+          for service in account-service transfer-service antifraud-service bank-frontend; do
+            echo "Deploying $service to Railway..."
+            railway up --service "$service" --detach --yes --path-as-root "$service"
+          done

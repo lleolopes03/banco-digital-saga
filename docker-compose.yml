@@ -1,0 +1,198 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: bank-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:19093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:19093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - bank-network
+
+  postgres-account:
+    image: postgres:16
+    container_name: bank-postgres-account
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ACCOUNT_DB_NAME:-account_db}
+      POSTGRES_USER: ${ACCOUNT_DB_USER:-account}
+      POSTGRES_PASSWORD: ${ACCOUNT_DB_PASSWORD:-account}
+    ports:
+      - "5442:5432"
+    volumes:
+      - postgres_account_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ACCOUNT_DB_USER:-account} -d ${ACCOUNT_DB_NAME:-account_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bank-network
+
+  postgres-transfer:
+    image: postgres:16
+    container_name: bank-postgres-transfer
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TRANSFER_DB_NAME:-transfer_db}
+      POSTGRES_USER: ${TRANSFER_DB_USER:-transfer}
+      POSTGRES_PASSWORD: ${TRANSFER_DB_PASSWORD:-transfer}
+    ports:
+      - "5443:5432"
+    volumes:
+      - postgres_transfer_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TRANSFER_DB_USER:-transfer} -d ${TRANSFER_DB_NAME:-transfer_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bank-network
+
+  postgres-antifraud:
+    image: postgres:16
+    container_name: bank-postgres-antifraud
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ANTIFRAUD_DB_NAME:-antifraud_db}
+      POSTGRES_USER: ${ANTIFRAUD_DB_USER:-antifraud}
+      POSTGRES_PASSWORD: ${ANTIFRAUD_DB_PASSWORD:-antifraud}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_antifraud_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ANTIFRAUD_DB_USER:-antifraud} -d ${ANTIFRAUD_DB_NAME:-antifraud_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bank-network
+
+  postgres-notification:
+    image: postgres:16
+    container_name: bank-postgres-notification
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${NOTIFICATION_DB_NAME:-notification_db}
+      POSTGRES_USER: ${NOTIFICATION_DB_USER:-notification}
+      POSTGRES_PASSWORD: ${NOTIFICATION_DB_PASSWORD:-notification}
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_notification_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFICATION_DB_USER:-notification} -d ${NOTIFICATION_DB_NAME:-notification_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bank-network
+
+  redis:
+    image: redis:7
+    container_name: bank-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bank-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: bank-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      # 4317/4318 NÃO publicados no host de propósito: quem recebe OTLP de fora agora é o
+      # otel-collector (abaixo), que repassa pro Jaeger só dentro da bank-network. Antes da
+      # Fatia 14 os serviços exportavam direto pra cá; ver otel-collector-config.yaml.
+    networks:
+      - bank-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: bank-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    depends_on:
+      - jaeger
+    networks:
+      - bank-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bank-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    # host.docker.internal (usado em prometheus.yml para alcançar os serviços rodando localmente
+    # como processo, não como container) só resolve por padrão no Docker Desktop (Windows/Mac).
+    # Em Linux puro, adicione manualmente uma entrada de host apontando pro IP do host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - bank-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: bank-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana-dashboard.json:/etc/grafana/dashboards/grafana-dashboard.json:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - bank-network
+
+networks:
+  bank-network:
+    driver: bridge
+
+volumes:
+  postgres_account_data:
+  postgres_transfer_data:
+  postgres_antifraud_data:
+  postgres_notification_data:
+  prometheus_data:
+  grafana_data:

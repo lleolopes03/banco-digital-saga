@@ -1,0 +1,62 @@
+<div class="transfer-page">
+  <form class="transfer-card card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    <h1>Nova transferência</h1>
+
+    <div class="field">
+      <label for="accountDestinoId">Conta de destino</label>
+      <input
+        id="accountDestinoId"
+        type="text"
+        placeholder="UUID da conta de destino"
+        formControlName="accountDestinoId"
+        [class.invalid]="accountDestinoId.invalid && accountDestinoId.touched" />
+      @if (accountDestinoId.invalid && accountDestinoId.touched) {
+        <span class="field-error">
+          @if (accountDestinoId.errors?.['required']) {
+            Informe a conta de destino.
+          } @else if (accountDestinoId.errors?.['pattern']) {
+            Informe um UUID de conta válido.
+          } @else if (accountDestinoId.errors?.['sameAccount']) {
+            A conta de destino deve ser diferente da sua conta.
+          }
+        </span>
+      }
+    </div>
+
+    <div class="field">
+      <label for="valor">Valor (R$)</label>
+      <input
+        id="valor"
+        type="number"
+        step="0.01"
+        min="0.01"
+        formControlName="valor"
+        [class.invalid]="valor.invalid && valor.touched" />
+      @if (valor.invalid && valor.touched) {
+        <span class="field-error">
+          @if (valor.errors?.['required']) {
+            Informe o valor da transferência.
+          } @else if (valor.errors?.['min']) {
+            O valor deve ser maior que zero.
+          }
+        </span>
+      }
+    </div>
+
+    <div class="field">
+      <label for="descricao">Descrição (opcional)</label>
+      <input id="descricao" type="text" formControlName="descricao" />
+    </div>
+
+    @if (errorMessage) {
+      <div class="alert-error" role="alert">{{ errorMessage }}</div>
+    }
+
+    <div class="transfer-actions">
+      <button type="submit" class="btn btn-primary" [disabled]="isSubmitting">
+        {{ isSubmitting ? 'Enviando...' : 'Transferir' }}
+      </button>
+      <a class="btn btn-secondary" routerLink="/dashboard">Cancelar</a>
+    </div>
+  </form>
+</div>

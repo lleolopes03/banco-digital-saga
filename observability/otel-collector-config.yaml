@@ -1,0 +1,28 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  # Jaeger (all-in-one) já fala OTLP nativamente desde que o coletor embutido esteja habilitado
+  # (COLLECTOR_OTLP_ENABLED=true no docker-compose.yml) — o collector aqui não faz nenhuma
+  # tradução de protocolo, só recebe de todos os 3 serviços e repassa em lote.
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/jaeger, debug]

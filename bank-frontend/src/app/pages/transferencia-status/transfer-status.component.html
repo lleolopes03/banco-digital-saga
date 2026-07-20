@@ -1,0 +1,41 @@
+<div class="status-page">
+  <div class="status-card card">
+    <h1>Status da transferência</h1>
+
+    <p class="connection-badge" [class.polling]="connectionMode === 'polling'">
+      @if (connectionMode === 'websocket') {
+        Acompanhando em tempo real
+      } @else {
+        Atualizando a cada 2s (modo alternativo)
+      }
+    </p>
+
+    <ol class="stepper">
+      @for (step of steps; track step.label) {
+        <li class="step" [class]="'step-' + step.state">
+          <span class="step-marker">
+            @switch (step.state) {
+              @case ('done') { <span>✓</span> }
+              @case ('error') { <span>✕</span> }
+              @case ('active') { <span class="pulse">●</span> }
+              @default { <span>○</span> }
+            }
+          </span>
+          <span class="step-label">{{ step.label }}</span>
+        </li>
+      }
+    </ol>
+
+    @if (isTerminalSuccess) {
+      <div class="alert-success">Transferência concluída com sucesso!</div>
+    }
+
+    @if (isTerminalFailure) {
+      <div class="alert-error" role="alert">
+        Transferência não concluída{{ latest?.failureReason ? ': ' + latest?.failureReason : '.' }}
+      </div>
+    }
+
+    <a class="btn btn-secondary" routerLink="/dashboard">Voltar ao dashboard</a>
+  </div>
+</div>

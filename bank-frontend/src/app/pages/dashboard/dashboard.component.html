@@ -1,0 +1,27 @@
+<div class="dashboard-page">
+  <header class="dashboard-header">
+    <h1>Minha conta</h1>
+    <button class="btn btn-secondary" type="button" (click)="logout()">Sair</button>
+  </header>
+
+  <section class="balance-card card">
+    <span class="balance-label">Saldo atual</span>
+
+    @if (isLoading) {
+      <span class="balance-value loading">Carregando...</span>
+    } @else if (errorMessage) {
+      <span class="balance-error">{{ errorMessage }}</span>
+    } @else {
+      <span class="balance-value">{{ balance | currency:'BRL' }}</span>
+    }
+
+    <button class="btn btn-secondary" type="button" (click)="loadBalance()" [disabled]="isLoading">
+      Atualizar saldo
+    </button>
+  </section>
+
+  <nav class="dashboard-actions">
+    <a class="btn btn-primary" routerLink="/transferencia">Nova transferência</a>
+    <a class="btn btn-secondary" routerLink="/extrato">Ver extrato</a>
+  </nav>
+</div>

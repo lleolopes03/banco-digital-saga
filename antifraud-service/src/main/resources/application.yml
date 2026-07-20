@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: antifraud-service
+  jpa:
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/antifraud
+  kafka:
+    consumer:
+      group-id: antifraud-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true

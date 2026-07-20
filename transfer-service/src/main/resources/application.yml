@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: transfer-service
+  jpa:
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/transfer
+  kafka:
+    consumer:
+      group-id: transfer-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+# Mesmo segredo do account-service (compartilhado via env var JWT_SECRET): quem gera o token é o
+# account-service (POST /api/auth/login), transfer-service só valida a assinatura.
+jwt:
+  secret: ${JWT_SECRET:banco-digital-saga-jwt-secret-desenvolvimento-nao-usar-em-producao}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,circuitbreakers,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    circuitbreakers:
+      enabled: true
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      accountService:
+        sliding-window-size: 10
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+
+rate-limit:
+  transfer:
+    max-requests: 10
+    window: 60s
