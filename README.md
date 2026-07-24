@@ -264,6 +264,42 @@ O mesmo comportamento (chamada normal → falhas abrindo o circuito → fallback
 `TransferServiceCircuitBreakerTest` (WireMock simulando o account-service), sem precisar derrubar
 nada manualmente.
 
+## Resiliência: dead-letter queue (DLQ) nos consumers Kafka
+
+Kafka processa mensagens em ordem dentro de uma partição. Se um `@KafkaListener` recebe uma
+mensagem que falha de forma **permanente** (payload corrompido, uma transição rejeitada pela
+`SagaStateMachine`) e simplesmente entra em loop de retry, nenhuma mensagem publicada depois dela
+naquela partição é processada — uma "poison pill" trava a fila inteira, não só o item problemático.
+
+`transfer-service`, `account-service` e `antifraud-service` (os três serviços com `@KafkaListener`
+de verdade — `notification-service` ainda não tem consumer implementado) registram um
+`DefaultErrorHandler` com `DeadLetterPublishingRecoverer` (`KafkaErrorHandlingConfig`, em
+`infrastructure/messaging` de cada um): até 3 tentativas (1 inicial + 2 retries, 1s de backoff
+entre elas — deliberadamente curto, para não competir com o timeout de 2 minutos do
+`SagaTimeoutScheduler`, que é a rede de segurança maior para sagas travadas). Esgotadas as
+tentativas, a mensagem é desviada para o tópico `<topico-original>-dlt` (sufixo padrão desta
+versão do Spring Kafka — **não** `.DLT`, como a maioria da documentação mais antiga descreve) e o
+consumer segue processando as próximas normalmente. O Spring Boot injeta esse error handler
+automaticamente em todos os `@KafkaListener` do serviço assim que o bean existe, sem precisar
+configurar cada consumer individualmente.
+
+| Serviço | Consumers cobertos | Por que importa |
+|---|---|---|
+| `account-service` | `TransferRequestedConsumer`, `DebitConfirmationRequestedConsumer`, `CreditRequestedConsumer`, `TransferCompensateConsumer` | É quem move dinheiro de fato (reserva/débito/crédito) — uma partição travada aqui trava o núcleo da saga |
+| `transfer-service` | os cinco consumers do orquestrador (`TransferReservedConsumer`, `AntiFraudEventConsumer`, `DebitConfirmedConsumer`, `CreditConfirmedConsumer`, `TransferCompensatedConsumer`) | Sem isso, uma mensagem travada aqui trava a orquestração inteira da saga |
+| `antifraud-service` | `TransferReservedConsumer` | Menor superfície, mas sem DLQ uma falha permanente trava toda avaliação de fraude subsequente |
+
+Cada serviço tem um `KafkaErrorHandlingConfigTest` (Kafka real via Testcontainers, mesmo grupo de
+consumer usado em produção): publica um payload que falha na deserialização em toda tentativa e
+confirma que a mensagem aparece no tópico `-dlt` correspondente — prova de que o error handler
+está de fato ligado ao container dos listeners, não só declarado.
+
+**Próximo passo consciente**: hoje as mensagens na DLQ ficam só armazenadas, visíveis e não
+perdidas, mas sem reprocessamento automático nem alerta. Um consumer dedicado lendo da DLT — para
+reprocessamento manual após corrigir a causa raiz, ou alimentando um contador Prometheus
+(`kafka_dlt_messages_total`) que dispara alerta no Grafana — é a evolução natural, aproveitando a
+stack de observabilidade que já existe.
+
 ## Autenticação
 
 `account-service` e `transfer-service` agora exigem um JWT válido em toda rota que não seja
