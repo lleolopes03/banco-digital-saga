@@ -7,11 +7,12 @@ Simulação de um banco digital com contas, depósitos e transferências. Toda t
 crédito no destinatário. Falhas em qualquer etapa disparam transações compensatórias que
 devolvem o dinheiro à conta de origem (rollback via saga, não via transação de banco de dados).
 
-Três microsserviços Spring Boot se coordenam via Kafka (padrão Outbox) sem nenhuma chamada
-síncrona entre si, um frontend Angular acompanha o progresso da saga em tempo real via
-WebSocket/STOMP, e todo o sistema é validado a cada push por um pipeline de CI que sobe
-Postgres/Kafka/Redis efêmeros via Testcontainers — sem depender de nenhum ambiente Docker
-local.
+Três microsserviços Spring Boot orquestram a saga da transferência e se coordenam via Kafka
+(padrão Outbox) sem nenhuma chamada síncrona entre si; um quarto (`notification-service`) reage
+ao resultado da saga registrando notificações em MongoDB. Um frontend Angular acompanha o
+progresso da saga em tempo real via WebSocket/STOMP, e todo o sistema é validado a cada push por
+um pipeline de CI que sobe Postgres/MongoDB/Kafka/Redis efêmeros via Testcontainers — sem
+depender de nenhum ambiente Docker local.
 
 ## Demonstração
 
@@ -23,10 +24,11 @@ antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no fro
 ## Stack
 
 - **Backend**: Java 21, Spring Boot 4.1 (o Initializr não oferece mais a linha 3.x — ver nota
-  abaixo), Maven, PostgreSQL, Flyway, Kafka (modo KRaft), Redis, Resilience4j, WebSocket/STOMP
+  abaixo), Maven, PostgreSQL, Flyway, MongoDB (notification-service — ver seção "Notificações"),
+  Kafka (modo KRaft), Redis, Resilience4j, WebSocket/STOMP
 - **Frontend**: Angular 19 standalone, TypeScript, `@stomp/stompjs` (acompanhamento da saga em
   tempo real), ESLint
-- **Testes**: JUnit 5, Mockito, Testcontainers (postgresql, kafka, redis), Karma/Jasmine
+- **Testes**: JUnit 5, Mockito, Testcontainers (postgresql, mongodb, kafka, redis), Karma/Jasmine
   (frontend), um módulo `e2e-tests` dedicado que sobe os três serviços da saga na mesma JVM
   contra infraestrutura real
 - **Observabilidade**: OpenTelemetry (tracing distribuído via otel-collector → Jaeger) +
@@ -70,11 +72,13 @@ flowchart TB
     style KAFKA fill:#16a34a,color:#fff
 ```
 
-Cada serviço da saga tem seu próprio PostgreSQL. Redis é usado por `account-service` e
-`transfer-service` para cache/idempotência/lock da saga, rate limiting e blacklist de logout do
-JWT. Os três serviços da saga exportam traces via OpenTelemetry para um otel-collector, que
-repassa pro Jaeger — e expõem métricas Prometheus em `/actuator/prometheus`, visualizadas num
-dashboard Grafana (ver "Tracing distribuído da saga" mais abaixo). A conexão WebSocket/STOMP do
+Cada serviço da saga tem seu próprio PostgreSQL; `notification-service` é a exceção — usa
+MongoDB (ver seção "Notificações" mais abaixo). Redis é compartilhado pelos quatro serviços
+backend para idempotência de consumers Kafka, além de cache/lock da saga (account/transfer) e
+checagem da blacklist de logout do JWT (account/transfer/notification). Os quatro serviços
+exportam traces via OpenTelemetry para um otel-collector, que repassa pro Jaeger — e expõem
+métricas Prometheus em `/actuator/prometheus`, visualizadas num dashboard Grafana (ver "Tracing
+distribuído da saga" mais abaixo). A conexão WebSocket/STOMP do
 frontend com o `transfer-service` é autenticada por JWT no frame `CONNECT` (não no handshake
 HTTP, que não suporta header customizado) e autorizada por assinatura — só quem é dono da conta
 de origem/destino pode acompanhar aquela transferência específica.
@@ -114,10 +118,10 @@ Cada `*-service` segue a mesma organização de pacotes:
 
 ```
 src/main/java/com/bancodigital/<servico>/
-├── domain/            entidades e regras de domínio (vazio por enquanto)
+├── domain/            entidades e regras de domínio
 ├── application/       casos de uso / services
 ├── infrastructure/
-│   ├── persistence/    repositories JPA
+│   ├── persistence/    repositories (JPA nos três serviços da saga; MongoDB no notification-service)
 │   └── messaging/       producers/consumers Kafka
 └── web/
     ├── controller/
@@ -272,8 +276,8 @@ mensagem que falha de forma **permanente** (payload corrompido, uma transição 
 `SagaStateMachine`) e simplesmente entra em loop de retry, nenhuma mensagem publicada depois dela
 naquela partição é processada — uma "poison pill" trava a fila inteira, não só o item problemático.
 
-`transfer-service`, `account-service` e `antifraud-service` (os três serviços com `@KafkaListener`
-de verdade — `notification-service` ainda não tem consumer implementado) registram um
+Os quatro serviços com `@KafkaListener` de verdade (`account-service`, `transfer-service`,
+`antifraud-service` e, desde a fatia de notificações, `notification-service`) registram um
 `DefaultErrorHandler` com `DeadLetterPublishingRecoverer` (`KafkaErrorHandlingConfig`, em
 `infrastructure/messaging` de cada um): até 3 tentativas (1 inicial + 2 retries, 1s de backoff
 entre elas — deliberadamente curto, para não competir com o timeout de 2 minutos do
@@ -289,11 +293,12 @@ configurar cada consumer individualmente.
 | `account-service` | `TransferRequestedConsumer`, `DebitConfirmationRequestedConsumer`, `CreditRequestedConsumer`, `TransferCompensateConsumer` | É quem move dinheiro de fato (reserva/débito/crédito) — uma partição travada aqui trava o núcleo da saga |
 | `transfer-service` | os cinco consumers do orquestrador (`TransferReservedConsumer`, `AntiFraudEventConsumer`, `DebitConfirmedConsumer`, `CreditConfirmedConsumer`, `TransferCompensatedConsumer`) | Sem isso, uma mensagem travada aqui trava a orquestração inteira da saga |
 | `antifraud-service` | `TransferReservedConsumer` | Menor superfície, mas sem DLQ uma falha permanente trava toda avaliação de fraude subsequente |
+| `notification-service` | `TransferFinishedConsumer` | Único consumer do serviço, mas sem DLQ uma falha permanente pararia todo o histórico de notificações |
 
-Cada serviço tem um `KafkaErrorHandlingConfigTest` (Kafka real via Testcontainers, mesmo grupo de
-consumer usado em produção): publica um payload que falha na deserialização em toda tentativa e
-confirma que a mensagem aparece no tópico `-dlt` correspondente — prova de que o error handler
-está de fato ligado ao container dos listeners, não só declarado.
+Cada um dos quatro serviços tem um `KafkaErrorHandlingConfigTest` (Kafka real via Testcontainers,
+mesmo grupo de consumer usado em produção): publica um payload que falha na deserialização em
+toda tentativa e confirma que a mensagem aparece no tópico `-dlt` correspondente — prova de que o
+error handler está de fato ligado ao container dos listeners, não só declarado.
 
 **Próximo passo consciente**: hoje as mensagens na DLQ ficam só armazenadas, visíveis e não
 perdidas, mas sem reprocessamento automático nem alerta. Um consumer dedicado lendo da DLT — para
@@ -316,12 +321,12 @@ frontend, só participa da saga via Kafka.
 - **`POST /api/auth/logout`**: extrai o `jti` e a expiração do token recebido e grava
   `jwt:blacklist:<jti>` no Redis com TTL igual ao tempo de validade **restante** do token — a
   entrada some sozinha do Redis exatamente quando o token expiraria de qualquer forma.
-- **`JwtAuthenticationFilter`** (duplicado em `account-service` e `transfer-service`, mesma
-  convenção de duplicação entre serviços já usada para `OutboxEvent`/`ProcessedEvent`): valida a
-  assinatura do token e, antes de autorizar, confere se o `jti` está na blacklist do Redis. Os
-  dois serviços apontam para a mesma instância Redis (`docker-compose.yml`) e compartilham o
-  segredo de assinatura via `JWT_SECRET`, então um logout feito no `account-service` também
-  invalida o token no `transfer-service` imediatamente.
+- **`JwtAuthenticationFilter`** (duplicado em `account-service`, `transfer-service` e
+  `notification-service`, mesma convenção de duplicação entre serviços já usada para
+  `OutboxEvent`/`ProcessedEvent`): valida a assinatura do token e, antes de autorizar, confere se
+  o `jti` está na blacklist do Redis. Os três serviços apontam para a mesma instância Redis
+  (`docker-compose.yml`) e compartilham o segredo de assinatura via `JWT_SECRET`, então um logout
+  feito no `account-service` também invalida o token nos outros dois imediatamente.
 
 ### Autorização por conta
 
@@ -398,29 +403,31 @@ etapa final (conclusão ou compensação).
 ### Arquitetura
 
 ```
-account-service ──┐
-transfer-service ─┼── OTLP (HTTP :4318) ──► otel-collector ──► Jaeger (:16686)
-antifraud-service ─┘                              │
-                                                    ▼
+account-service ────┐
+transfer-service ────┼── OTLP (HTTP :4318) ──► otel-collector ──► Jaeger (:16686)
+antifraud-service ───┤                              │
+notification-service ┘                              ▼
                                         (só traces — métricas não passam
                                          pelo collector, ver abaixo)
 
-account-service ──┐
-transfer-service ─┼── scrape /actuator/prometheus ──► Prometheus (:9090) ──► Grafana (:3000)
-antifraud-service ─┘
+account-service ────┐
+transfer-service ────┼── scrape /actuator/prometheus ──► Prometheus (:9090) ──► Grafana (:3000)
+antifraud-service ───┤
+notification-service ┘
 ```
 
 O `otel-collector` (`otel/opentelemetry-collector-contrib`, config em
 `observability/otel-collector-config.yaml`) existe como uma camada extra entre os serviços e o
-Jaeger — recebe OTLP de todos os três e repassa em lote, em vez de cada serviço falar direto com
-o Jaeger. Métricas usam um caminho totalmente separado (scrape do Prometheus em
+Jaeger — recebe OTLP de todos os quatro e repassa em lote, em vez de cada serviço falar direto
+com o Jaeger. Métricas usam um caminho totalmente separado (scrape do Prometheus em
 `/actuator/prometheus`, não push OTLP) — mais simples de depurar e é o modelo padrão do
-ecossistema Prometheus/Grafana.
+ecossistema Prometheus/Grafana. `notification-service` só entrou nesses dois caminhos na fatia
+de notificações (antes era um esqueleto sem código de negócio nenhum para tracear).
 
 > **Pegadinha do Spring Boot 4.1**: a propriedade `management.otlp.tracing.endpoint` (válida até
 > a linha 3.x) foi renomeada para `management.opentelemetry.tracing.export.otlp.endpoint`. Usar o
 > nome antigo não dá erro nenhum — o app sobe normalmente e simplesmente não exporta trace
-> nenhum, silenciosamente. Ver `application-dev.yml` dos três serviços.
+> nenhum, silenciosamente. Ver `application-dev.yml` dos quatro serviços.
 
 ### Propagação através do Kafka (padrão Outbox)
 
@@ -444,6 +451,10 @@ usada para `OutboxEvent`/`ProcessedEvent`) concentra essa lógica:
 Se o header vier ausente/nulo (evento antigo, ou publicado fora desse fluxo), o span simplesmente
 começa um trace novo em vez de falhar — a propagação é best-effort, nunca bloqueia a saga.
 
+`notification-service` só consome eventos (nunca publica via Outbox), então sua versão de
+`SagaObservability` não tem `traceparentAtual()`/`injetarHeader()` — só `executarEtapa()`, do
+lado consumer.
+
 ### Spans customizados
 
 | Span | Serviço | Onde |
@@ -453,6 +464,7 @@ começa um trace novo em vez de falhar — a propagação é best-effort, nunca 
 | `saga.debit` | account-service | `DebitConfirmationRequestedConsumer` → `AccountService.confirmarDebito` |
 | `saga.credit` | account-service | `CreditRequestedConsumer` → `AccountService.creditarPorTransferencia` |
 | `saga.compensate` | account-service | `TransferCompensateConsumer` → `liberarReserva`/`reverterDebito` (os dois cenários de compensação) |
+| `saga.notify` | notification-service | `TransferFinishedConsumer` → `NotificationService.registrarTransferConcluida`/`registrarTransferFalhou` |
 
 Cada um carrega os atributos `transferId` e `valor` (nunca CPF/nome — ver "Sanitização" abaixo).
 Os cinco consumers do `transfer-service` (que só orquestram, não executam a etapa de negócio em
@@ -470,9 +482,9 @@ requisição/resposta.
 
 ### Métricas Prometheus
 
-Cada serviço expõe `/actuator/prometheus` (liberado no `SecurityConfig` do account-service e
-transfer-service, igual a `/actuator/health` — o Prometheus não carrega JWT nenhum ao fazer
-scrape):
+Cada serviço expõe `/actuator/prometheus` (liberado no `SecurityConfig` de account-service,
+transfer-service e notification-service, igual a `/actuator/health` — o Prometheus não carrega
+JWT nenhum ao fazer scrape):
 
 - `saga_transfers_total{status="COMPLETED"|"FAILED"}` — contador, incrementado no
   `SagaOrchestratorService` exatamente nos pontos onde a state machine transiciona pra um estado
@@ -495,8 +507,8 @@ sem nenhum passo manual de import). Painéis:
 2. **Sagas concluídas vs falhas** (última hora).
 3. **Sagas compensadas por motivo** (pizza, `saga_compensations_total` agrupado por `reason`).
 4. **Latência p95 por etapa da saga** — `histogram_quantile(0.95, ...)` sobre
-   `saga_step_duration_seconds`, uma linha por `step`, agregando dados dos três serviços no
-   mesmo gráfico.
+   `saga_step_duration_seconds`, uma linha por `step`, agregando dados de todos os serviços que
+   emitem essa métrica (os três da saga, mais `notify` do notification-service) no mesmo gráfico.
 5. **Sagas por status ao longo do tempo** (barras empilhadas).
 
 ### Teste automatizado: `TracingContextPropagationTest`
@@ -532,11 +544,20 @@ anotação, `getTextMapPropagator()` devolve um propagator no-op e o teste falha
 6. Abra o Grafana (http://localhost:3000) → dashboard "Banco Digital Saga — Transferências" e
    confirme que os painéis têm dados reais (não "No data").
 
-Essa verificação foi executada de ponta a ponta durante o desenvolvimento desta fatia — os
-traces reais (capturados via API do Jaeger, já que o print de tela não estava disponível na
-sessão) estão documentados em `observability/screenshots/README.md`, junto com um bug real
-encontrado nesse processo (Prometheus levando 401 do `SecurityConfig` da Fatia 13 — corrigido
-liberando `/actuator/prometheus`).
+Essa verificação foi executada de ponta a ponta durante o desenvolvimento desta fatia (quando
+`notification-service` ainda era um esqueleto, por isso "três serviços" acima) — os traces reais
+(capturados via API do Jaeger, já que o print de tela não estava disponível na sessão) estão
+documentados em `observability/screenshots/README.md`, junto com um bug real encontrado nesse
+processo (Prometheus levando 401 do `SecurityConfig` da Fatia 13 — corrigido liberando
+`/actuator/prometheus`).
+
+> **Atualização (fatia de notificações)**: `TransferCompleted`/`TransferFailed` são publicados
+> pelo mesmo `publicarEvento(...)` que já captura o `traceparent` atual, então o mesmo trace
+> agora deveria se estender até `saga.notify` em `notification-service` (`Services 4`) ao repetir
+> o passo 4 acima. Isso reaproveita o mecanismo já provado por `TracingContextPropagationTest`
+> (account-service), mas não foi verificado manualmente no Jaeger nem coberto por um teste
+> dedicado de propagação nesta fatia — `TransferFinishedConsumerTest` confirma que a
+> `Notification` é criada, não que o trace chega intacto.
 
 ## Antifraude
 
@@ -607,8 +628,8 @@ confirma a `Notification` persistida, incluindo o cenário de evento reentregue 
 
 Pipeline completo em [`.github/workflows/ci.yml`](.github/workflows/ci.yml), disparado a cada
 push e a cada pull request. Nenhum job depende do `docker-compose.yml` local — todo container
-(Postgres, Kafka, Redis) é efêmero, criado pelo próprio Testcontainers dentro do runner do
-GitHub Actions.
+(Postgres, MongoDB, Kafka, Redis) é efêmero, criado pelo próprio Testcontainers dentro do runner
+do GitHub Actions.
 
 ```mermaid
 flowchart LR
