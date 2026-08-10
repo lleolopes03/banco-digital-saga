@@ -28,13 +28,16 @@ public class OutboxPublisherScheduler {
     // transfer-service publica um comando diferente em cada etapa da saga, cada um no seu
     // próprio tópico (transfer.requested, transfer.debit, transfer.credit). Os comandos de
     // compensação (ReleaseReservedAmount, ReverseDebitRequested) dividem o tópico
-    // transfer.compensate, distinguidos pelo header eventType.
+    // transfer.compensate, distinguidos pelo header eventType — mesma ideia para os eventos
+    // terminais (TransferCompleted, TransferFailed), que dividem transfer.finished.
     private static final Map<String, String> TOPICO_POR_EVENTO = Map.of(
             "TransferRequested", "transfer.requested",
             "DebitConfirmationRequested", "transfer.debit",
             "CreditRequested", "transfer.credit",
             "ReleaseReservedAmount", "transfer.compensate",
-            "ReverseDebitRequested", "transfer.compensate"
+            "ReverseDebitRequested", "transfer.compensate",
+            "TransferCompleted", "transfer.finished",
+            "TransferFailed", "transfer.finished"
     );
 
     private final OutboxEventRepository outboxEventRepository;

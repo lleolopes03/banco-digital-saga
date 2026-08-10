@@ -17,6 +17,8 @@ import com.bancodigital.transfer.domain.event.DebitReversed;
 import com.bancodigital.transfer.domain.event.ReleaseReservedAmount;
 import com.bancodigital.transfer.domain.event.ReservationReleased;
 import com.bancodigital.transfer.domain.event.ReverseDebitRequested;
+import com.bancodigital.transfer.domain.event.TransferCompleted;
+import com.bancodigital.transfer.domain.event.TransferFailed;
 import com.bancodigital.transfer.domain.event.TransferRequested;
 import com.bancodigital.transfer.domain.event.TransferReserved;
 import com.bancodigital.transfer.infrastructure.client.AccountServiceClient;
@@ -173,6 +175,10 @@ public class SagaOrchestratorService {
         sagaInstanceRepository.save(saga);
         sagaStatusPublisher.publish(saga);
         sagaObservability.registrarSagaFinalizada("COMPLETED");
+
+        TransferCompleted payload = new TransferCompleted(saga.getId(), saga.getAccountOrigemId(),
+                saga.getAccountDestinoId(), saga.getValor(), Instant.now());
+        publicarEvento(saga.getId(), "TransferCompleted", payload);
     }
 
     /*
@@ -220,6 +226,7 @@ public class SagaOrchestratorService {
         sagaInstanceRepository.save(saga);
         sagaStatusPublisher.publish(saga);
         sagaObservability.registrarSagaFinalizada("FAILED");
+        publicarTransferFailed(saga);
     }
 
     @Transactional
@@ -229,6 +236,7 @@ public class SagaOrchestratorService {
         sagaInstanceRepository.save(saga);
         sagaStatusPublisher.publish(saga);
         sagaObservability.registrarSagaFinalizada("FAILED");
+        publicarTransferFailed(saga);
     }
 
     /*
@@ -250,6 +258,7 @@ public class SagaOrchestratorService {
                 sagaInstanceRepository.save(saga);
                 sagaStatusPublisher.publish(saga);
                 sagaObservability.registrarSagaFinalizada("FAILED");
+                publicarTransferFailed(saga);
             }
             case RESERVED, ANTIFRAUD_PENDING, ANTIFRAUD_APPROVED -> {
                 saga.registrarMotivoFalha(MOTIVO_TIMEOUT);
@@ -293,6 +302,12 @@ public class SagaOrchestratorService {
         ReverseDebitRequested payload = new ReverseDebitRequested(saga.getId(), saga.getAccountOrigemId(),
                 saga.getValor(), Instant.now());
         publicarEvento(saga.getId(), "ReverseDebitRequested", payload);
+    }
+
+    private void publicarTransferFailed(SagaInstance saga) {
+        TransferFailed payload = new TransferFailed(saga.getId(), saga.getAccountOrigemId(),
+                saga.getAccountDestinoId(), saga.getValor(), saga.getFailureReason(), Instant.now());
+        publicarEvento(saga.getId(), "TransferFailed", payload);
     }
 
     /*

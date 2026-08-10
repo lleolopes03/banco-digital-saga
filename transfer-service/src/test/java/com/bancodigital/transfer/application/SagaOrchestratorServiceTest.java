@@ -194,7 +194,7 @@ class SagaOrchestratorServiceTest {
     }
 
     @Test
-    void deveAtualizarSagaParaCompletedAoProcessarCreditoConfirmado() {
+    void deveAtualizarSagaParaCompletedEPublicarTransferCompletedAoProcessarCreditoConfirmado() {
         SagaInstance saga = criarSagaNoEstado(SagaStatus.DEBITED);
         when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
 
@@ -203,7 +203,11 @@ class SagaOrchestratorServiceTest {
 
         assertThat(saga.getStatus()).isEqualTo(SagaStatus.COMPLETED);
         verify(sagaInstanceRepository).save(saga);
-        verify(outboxEventRepository, never()).save(any());
+
+        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxCaptor.capture());
+        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferCompleted");
+        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(saga.getId());
     }
 
     @Test
@@ -251,7 +255,7 @@ class SagaOrchestratorServiceTest {
     }
 
     @Test
-    void deveAtualizarSagaParaFailedAoProcessarReservaLiberada() {
+    void deveAtualizarSagaParaFailedEPublicarTransferFailedAoProcessarReservaLiberada() {
         SagaInstance saga = criarSagaNoEstado(SagaStatus.ANTIFRAUD_REJECTED);
         when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
 
@@ -259,11 +263,15 @@ class SagaOrchestratorServiceTest {
 
         assertThat(saga.getStatus()).isEqualTo(SagaStatus.FAILED);
         verify(sagaInstanceRepository).save(saga);
-        verify(outboxEventRepository, never()).save(any());
+
+        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxCaptor.capture());
+        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferFailed");
+        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(saga.getId());
     }
 
     @Test
-    void deveAtualizarSagaParaFailedAoProcessarDebitoRevertido() {
+    void deveAtualizarSagaParaFailedEPublicarTransferFailedAoProcessarDebitoRevertido() {
         SagaInstance saga = criarSagaNoEstado(SagaStatus.DEBITED);
         when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
 
@@ -271,11 +279,15 @@ class SagaOrchestratorServiceTest {
 
         assertThat(saga.getStatus()).isEqualTo(SagaStatus.FAILED);
         verify(sagaInstanceRepository).save(saga);
-        verify(outboxEventRepository, never()).save(any());
+
+        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxCaptor.capture());
+        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferFailed");
+        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(saga.getId());
     }
 
     @Test
-    void deveFalharDiretamenteSemCompensacaoAoProcessarTimeoutEmStarted() {
+    void deveFalharDiretamenteSemCompensacaoEPublicarTransferFailedAoProcessarTimeoutEmStarted() {
         SagaInstance saga = criarSagaNoEstado(SagaStatus.STARTED);
         when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
 
@@ -283,7 +295,10 @@ class SagaOrchestratorServiceTest {
 
         assertThat(saga.getStatus()).isEqualTo(SagaStatus.FAILED);
         assertThat(saga.getFailureReason()).isEqualTo("SAGA_TIMEOUT");
-        verify(outboxEventRepository, never()).save(any());
+
+        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxCaptor.capture());
+        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferFailed");
     }
 
     @Test
