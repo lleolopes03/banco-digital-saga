@@ -2,17 +2,30 @@ server:
   port: 8084
 
 spring:
-  datasource:
-    url: jdbc:postgresql://${NOTIFICATION_DB_HOST:localhost}:${NOTIFICATION_DB_PORT:5435}/${NOTIFICATION_DB_NAME:notification_db}
-    username: ${NOTIFICATION_DB_USER:notification}
-    password: ${NOTIFICATION_DB_PASSWORD:notification}
+  # Prefixo spring.mongodb (MongoProperties), não spring.data.mongodb — nesta versão do Spring
+  # Boot as propriedades de conexão do Mongo (host/port/database/uri/...) ficam separadas das
+  # propriedades específicas do Spring Data (spring.data.mongodb: autoIndexCreation, gridfs etc).
+  # Ver mesma observação em application.yml (uuid-representation).
+  mongodb:
+    host: ${MONGO_NOTIFICATION_HOST:localhost}
+    port: ${MONGO_NOTIFICATION_PORT:27018}
+    database: ${MONGO_NOTIFICATION_DB:notification_db}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
 management:
-  otlp:
+  # Nome da propriedade mudou no Spring Boot 4.1 (management.otlp.tracing.endpoint da linha 3.x
+  # não existe mais) — sem isso o exportador de traces fica sem endpoint configurado e nenhum
+  # span sai para o otel-collector/Jaeger, silenciosamente. Ver mesma nota nos outros serviços.
+  opentelemetry:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
   tracing:
     sampling:
       probability: 1.0

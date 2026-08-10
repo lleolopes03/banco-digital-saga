@@ -85,20 +85,22 @@ services:
     networks:
       - bank-network
 
-  postgres-notification:
-    image: postgres:16
-    container_name: bank-postgres-notification
+  mongo-notification:
+    image: mongo:7
+    container_name: bank-mongo-notification
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${NOTIFICATION_DB_NAME:-notification_db}
-      POSTGRES_USER: ${NOTIFICATION_DB_USER:-notification}
-      POSTGRES_PASSWORD: ${NOTIFICATION_DB_PASSWORD:-notification}
+      MONGO_INITDB_DATABASE: ${MONGO_NOTIFICATION_DB:-notification_db}
     ports:
-      - "5435:5432"
+      # 27017 é a porta padrão do Mongo, mas fica remapeada pra 27018 aqui pelo mesmo motivo já
+      # documentado para os bancos Postgres deste projeto (ver README, seção "Subindo o
+      # ambiente"): evita conflito com uma instância de MongoDB já rodando nativamente na
+      # máquina. Ajuste livremente se não houver conflito no seu ambiente.
+      - "27018:27017"
     volumes:
-      - postgres_notification_data:/var/lib/postgresql/data
+      - mongo_notification_data:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${NOTIFICATION_DB_USER:-notification} -d ${NOTIFICATION_DB_NAME:-notification_db}"]
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -193,6 +195,6 @@ volumes:
   postgres_account_data:
   postgres_transfer_data:
   postgres_antifraud_data:
-  postgres_notification_data:
+  mongo_notification_data:
   prometheus_data:
   grafana_data:
