@@ -35,8 +35,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // /actuator/prometheus liberado porque o Prometheus faz scrape sem
                         // credencial nenhuma, igual a /actuator/health — mesma convenção já
-                        // usada em account-service/transfer-service.
-                        .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
+                        // usada em account-service/transfer-service. Swagger UI/api-docs também
+                        // liberados para carregar sem JWT — as chamadas reais continuam exigindo.
+                        .requestMatchers("/actuator/health", "/actuator/prometheus", "/v3/api-docs/**",
+                                "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(authenticationEntryPoint)

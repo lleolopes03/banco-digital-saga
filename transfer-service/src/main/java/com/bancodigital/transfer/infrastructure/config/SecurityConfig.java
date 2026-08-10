@@ -40,7 +40,10 @@ public class SecurityConfig {
                         // Authorization (limitação do WebSocket nativo do browser) — a
                         // autenticação de verdade acontece no frame STOMP CONNECT, via
                         // StompAuthChannelInterceptor.
-                        .requestMatchers("/actuator/health", "/actuator/prometheus", "/ws/**").permitAll()
+                        // Swagger UI/api-docs liberados para carregar sem JWT — as chamadas reais
+                        // feitas a partir do "Try it out" continuam exigindo um token válido.
+                        .requestMatchers("/actuator/health", "/actuator/prometheus", "/ws/**",
+                                "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(authenticationEntryPoint)

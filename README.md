@@ -72,7 +72,7 @@ antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no fro
 
 - **Backend**: Java 21, Spring Boot 4.1 (o Initializr não oferece mais a linha 3.x — ver nota
   abaixo), Maven, PostgreSQL, Flyway, MongoDB (notification-service — ver seção "Notificações"),
-  Kafka (modo KRaft), Redis, Resilience4j, WebSocket/STOMP
+  Kafka (modo KRaft), Redis, Resilience4j, WebSocket/STOMP, springdoc-openapi (Swagger UI)
 - **Frontend**: Angular 19 standalone, TypeScript, `@stomp/stompjs` (acompanhamento da saga em
   tempo real), ESLint
 - **Testes**: JUnit 5, Mockito, Testcontainers (postgresql, mongodb, kafka, redis), Karma/Jasmine
@@ -229,6 +229,23 @@ Para rodar os testes (usa Testcontainers via `@ServiceConnection`, não depende 
 ```bash
 ./mvnw test
 ```
+
+#### Documentação da API (Swagger)
+
+Cada serviço com endpoint HTTP expõe Swagger UI (gerado por `springdoc-openapi` a partir dos
+`@RestController`/DTOs já existentes, sem anotação extra) e a spec OpenAPI crua:
+
+| Serviço | Swagger UI | OpenAPI JSON |
+|---|---|---|
+| account-service | http://localhost:8081/swagger-ui.html | http://localhost:8081/v3/api-docs |
+| transfer-service | http://localhost:8082/swagger-ui.html | http://localhost:8082/v3/api-docs |
+| notification-service | http://localhost:8084/swagger-ui.html | http://localhost:8084/v3/api-docs |
+
+A página carrega sem autenticação, mas os endpoints continuam exigindo JWT — clique em
+**Authorize** e cole um token (`POST /api/auth/login` no account-service) para usar o "Try it
+out" nos endpoints protegidos. `antifraud-service` não está na lista: não expõe nenhum endpoint
+HTTP (só participa da saga via Kafka — ver "Antifraude" abaixo), então uma spec OpenAPI ali
+estaria sempre vazia.
 
 ### 3. Frontend
 

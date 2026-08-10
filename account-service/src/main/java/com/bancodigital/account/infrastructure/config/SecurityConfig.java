@@ -38,7 +38,11 @@ public class SecurityConfig {
                         // /actuator/prometheus liberado porque o Prometheus faz scrape sem
                         // credencial nenhuma, igual a /actuator/health — restringir essa rota
                         // por rede/firewall é responsabilidade da infra, não desta aplicação.
-                        .requestMatchers("/api/auth/**", "/actuator/health", "/actuator/prometheus").permitAll()
+                        // Swagger UI/api-docs liberados para carregar sem JWT — as chamadas reais
+                        // feitas a partir do "Try it out" continuam exigindo um token válido,
+                        // como qualquer outra chamada à API.
+                        .requestMatchers("/api/auth/**", "/actuator/health", "/actuator/prometheus",
+                                "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(authenticationEntryPoint)
