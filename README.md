@@ -1,6 +1,13 @@
 # Banco Digital — Transferências com Saga Pattern
 
 [![CI](https://github.com/lleolopes03/banco-digital-saga/actions/workflows/ci.yml/badge.svg)](https://github.com/lleolopes03/banco-digital-saga/actions/workflows/ci.yml)
+![Java](https://img.shields.io/badge/Java-21-orange)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1-6DB33F)
+![Angular](https://img.shields.io/badge/Angular-19-DD0031)
+![Kafka](https://img.shields.io/badge/Kafka-KRaft-231F20)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1)
+![MongoDB](https://img.shields.io/badge/MongoDB-47A248)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-425CC7)
 
 Simulação de um banco digital com contas, depósitos e transferências. Toda transferência
 é orquestrada por uma saga: reserva de saldo → checagem antifraude → confirmação de débito →
@@ -20,6 +27,46 @@ Uma transferência, do formulário até a conclusão — e uma segunda transfer�
 antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no frontend:
 
 ![Demonstração: transferência com acompanhamento em tempo real via WebSocket, sucesso e compensação](docs/demo-transferencia.gif)
+
+## Destaques técnicos
+
+- **Saga coreografada com compensação real** — não é rollback de transação de banco; cada etapa
+  (reserva, antifraude, débito, crédito) tem sua própria compensação, disparada por evento.
+- **Padrão Outbox + propagação de trace através do Kafka** — nenhum evento se perde entre a
+  transação de negócio e a publicação, e a saga inteira aparece como **um único trace** no
+  Jaeger, mesmo cruzando a fronteira assíncrona do Kafka várias vezes.
+- **Resiliência provada por teste, não só documentada**: circuit breaker (Resilience4j) na única
+  chamada síncrona do sistema, dead-letter queue nos quatro serviços com consumer Kafka,
+  idempotência via Redis + fonte de verdade durável — cada mecanismo tem um teste de integração
+  com infraestrutura real (Testcontainers) provando que funciona, não só que existe.
+- **Observabilidade completa**: tracing distribuído (OpenTelemetry → Jaeger), métricas
+  customizadas (Micrometer → Prometheus → Grafana), dashboard provisionado automaticamente sem
+  passo manual.
+- **Segurança**: JWT com blacklist de logout compartilhada via Redis entre serviços, autorização
+  por dono da conta em todo endpoint escopado.
+- **Modelagem poliglota justificada**: PostgreSQL nos serviços transacionais da saga, MongoDB no
+  serviço de notificações — decisão de banco por formato de dados e padrão de acesso, não por
+  hábito (ver [Notificações](#notificações-mongodb)).
+- **Tempo real sem polling**: WebSocket/STOMP autenticado no frame (não no handshake HTTP, que
+  não suporta isso), com fallback automático de polling se a conexão cair.
+- **CI/CD sem depender de infraestrutura local**: todo teste sobe Postgres/MongoDB/Kafka/Redis
+  efêmeros via Testcontainers direto no runner do GitHub Actions; um gate end-to-end da saga
+  bloqueia o deploy se a compensação quebrar.
+
+## Índice
+
+- [Stack](#stack)
+- [Arquitetura](#arquitetura)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [Subindo o ambiente](#subindo-o-ambiente)
+- [Resiliência: circuit breaker na validação síncrona de saldo](#resiliência-circuit-breaker-na-validação-síncrona-de-saldo)
+- [Resiliência: dead-letter queue (DLQ) nos consumers Kafka](#resiliência-dead-letter-queue-dlq-nos-consumers-kafka)
+- [Autenticação](#autenticação)
+- [Transferência em tempo real (WebSocket/STOMP)](#transferência-em-tempo-real-websocketstomp)
+- [Tracing distribuído da saga (OpenTelemetry)](#tracing-distribuído-da-saga-opentelemetry)
+- [Antifraude](#antifraude)
+- [Notificações (MongoDB)](#notificações-mongodb)
+- [CI/CD](#cicd)
 
 ## Stack
 
@@ -234,6 +281,14 @@ GET http://localhost:8082/actuator/circuitbreakers   # estado, contagem de chama
 
 ### Teste manual: derrubando o account-service e observando o circuito abrir
 
+O mesmo comportamento (chamada normal → falhas abrindo o circuito → fallback sem bloquear a saga
+→ half-open tentando a chamada real de novo) é coberto automaticamente por
+`TransferServiceCircuitBreakerTest` (WireMock simulando o account-service), sem precisar derrubar
+nada manualmente — o roteiro abaixo é só para ver o mesmo efeito ao vivo.
+
+<details>
+<summary>Passo a passo (clique para expandir)</summary>
+
 Neste repositório o `account-service` roda como processo local (`./mvnw spring-boot:run`), não
 como container — ajuste o passo 2 caso você tenha containerizado os serviços.
 
@@ -264,10 +319,7 @@ como container — ajuste o passo 2 caso você tenha containerizado os serviços
 6. Suba o `account-service` de novo, espere ~10s (`waitDurationInOpenState`) e repita o passo 2:
    o estado deve ter voltado para `HALF_OPEN` e, após chamadas bem-sucedidas, para `CLOSED`.
 
-O mesmo comportamento (chamada normal → falhas abrindo o circuito → fallback sem bloquear a saga
-→ half-open tentando a chamada real de novo) é coberto automaticamente por
-`TransferServiceCircuitBreakerTest` (WireMock simulando o account-service), sem precisar derrubar
-nada manualmente.
+</details>
 
 ## Resiliência: dead-letter queue (DLQ) nos consumers Kafka
 
@@ -528,6 +580,9 @@ anotação, `getTextMapPropagator()` devolve um propagator no-op e o teste falha
 
 ### Teste manual: uma transferência, um trace, três serviços
 
+<details>
+<summary>Passo a passo (clique para expandir)</summary>
+
 1. Suba a infraestrutura completa (`docker compose up -d` — agora inclui `otel-collector`,
    `prometheus` e `grafana`) e os três serviços da saga em profile `dev`.
 2. Faça login e dispare uma transferência (ver exemplos de `curl` na seção "Autenticação" para
@@ -543,6 +598,8 @@ anotação, `getTextMapPropagator()` devolve um propagator no-op e o teste falha
    em vez de `saga.debit`/`saga.credit`.
 6. Abra o Grafana (http://localhost:3000) → dashboard "Banco Digital Saga — Transferências" e
    confirme que os painéis têm dados reais (não "No data").
+
+</details>
 
 Essa verificação foi executada de ponta a ponta durante o desenvolvimento desta fatia (quando
 `notification-service` ainda era um esqueleto, por isso "três serviços" acima) — os traces reais
