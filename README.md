@@ -99,13 +99,14 @@ de origem/destino pode acompanhar aquela transferência específica.
 /account-service        Spring Boot — contas, saldo, extrato (Dockerfile próprio)
 /transfer-service        Spring Boot — orquestrador da saga + WebSocket/STOMP (Dockerfile próprio)
 /antifraud-service       Spring Boot — validação de regras de fraude (Dockerfile próprio)
-/notification-service    Spring Boot — notificações (Anthropic API / Z-API no futuro)
+/notification-service    Spring Boot — notificações, persistidas em MongoDB (envio real via
+                          Anthropic API / Z-API no futuro)
 /bank-frontend            Angular — UI (Dockerfile próprio, build servido via nginx)
 /e2e-tests                Harness de teste ponta a ponta da saga (happy path + compensação),
                           roda os três serviços da saga na mesma JVM contra infra real
 /docs                     Assets de portfólio (gif de demonstração)
 /.github/workflows/ci.yml Pipeline de CI/CD (ver seção "CI/CD" abaixo)
-docker-compose.yml        Infra local (Kafka, Postgres x4, Redis, Jaeger, Prometheus, Grafana)
+docker-compose.yml        Infra local (Kafka, Postgres x3, MongoDB, Redis, Jaeger, Prometheus, Grafana)
 .env.example               Variáveis de ambiente usadas pelos serviços
 ```
 
@@ -141,22 +142,22 @@ Isso sobe:
 | PostgreSQL (account) | `5442` (db `account_db`) |
 | PostgreSQL (transfer) | `5443` (db `transfer_db`) |
 | PostgreSQL (antifraud) | `5434` (db `antifraud_db`) |
-| PostgreSQL (notification) | `5435` (db `notification_db`) |
+| MongoDB (notification) | `27018` (db `notification_db`) |
 | Redis | `6379` |
 | Jaeger UI | `16686` |
 | otel-collector | `4317` (OTLP gRPC) / `4318` (OTLP HTTP) — quem recebe traces dos serviços agora, repassa pro Jaeger internamente |
 | Prometheus | `9090` |
 | Grafana | `3000` (usuário `admin`/senha `admin`, ou acesso anônimo como Viewer) |
 
-> A stack original listava apenas 3 bancos Postgres (account/transfer/antifraud). Foi
-> adicionado um 4º (`postgres-notification`) porque o `notification-service` também recebeu
-> Spring Data JPA + PostgreSQL nas dependências e precisa de um banco próprio para subir no
-> profile `dev`. Remova-o se o `notification-service` não precisar persistir dados.
+> `notification-service` usa MongoDB, não Postgres: cada notificação é um documento cujo schema
+> varia por canal (`EMAIL`, `PUSH`, `SMS`), o que mapearia mal numa tabela relacional. É o único
+> banco não-Postgres do projeto.
 
-> **Nota sobre portas do Postgres**: `account` e `transfer` usariam `5432`/`5433` por padrão,
-> mas nesta máquina já existe um PostgreSQL nativo do Windows ocupando essas duas portas (o
-> mesmo problema documentado no projeto `convite_casamento` vizinho). Por isso eles foram
-> remapeados para `5442`/`5443`. Se a sua máquina não tiver esse conflito, ajuste livremente em
+> **Nota sobre portas**: `account` e `transfer` usariam `5432`/`5433` por padrão, mas nesta
+> máquina já existe um PostgreSQL nativo do Windows ocupando essas duas portas (o mesmo problema
+> documentado no projeto `convite_casamento` vizinho). Por isso eles foram remapeados para
+> `5442`/`5443`, e o MongoDB do notification-service (padrão `27017`) foi remapeado para `27018`
+> pelo mesmo motivo preventivo. Se a sua máquina não tiver esse conflito, ajuste livremente em
 > `docker-compose.yml`, `.env.example` e nos respectivos `application-dev.yml`.
 
 ### 2. Backends
@@ -302,10 +303,10 @@ stack de observabilidade que já existe.
 
 ## Autenticação
 
-`account-service` e `transfer-service` agora exigem um JWT válido em toda rota que não seja
-`/api/auth/**` ou `/actuator/health` (`SecurityConfig` de cada serviço). O `antifraud-service` e o
-`notification-service` continuam sem autenticação nesta fatia — nenhum dos dois expõe endpoint
-HTTP consumido pelo frontend.
+`account-service`, `transfer-service` e `notification-service` exigem um JWT válido em toda rota
+que não seja `/api/auth/**` ou `/actuator/health` (`SecurityConfig` de cada serviço).
+`antifraud-service` continua sem autenticação — não expõe nenhum endpoint HTTP consumido pelo
+frontend, só participa da saga via Kafka.
 
 ### Login, logout e blacklist
 
@@ -331,6 +332,7 @@ requisição, devolvendo `403` caso contrário:
 |---|---|---|
 | account-service | `GET/POST /api/accounts/{id}...` (balance, deposits, statement, busca por id) | `{id}` da URL |
 | transfer-service | `POST /api/transfers` | `accountOrigemId` do corpo |
+| notification-service | `GET /api/notifications/{accountId}` | `{accountId}` da URL |
 
 `GET /api/transfers/{id}` continua exigindo apenas um JWT válido (não verifica se o chamador é
 dono da conta de origem/destino da saga) — ver "Próximos passos" abaixo.
@@ -541,6 +543,66 @@ liberando `/actuator/prometheus`).
 Ainda não implementado como endpoint HTTP autenticável — o `antifraud-service` só participa da
 saga via Kafka (ver "Fluxo da saga de transferência" acima).
 
+## Notificações (MongoDB)
+
+`notification-service` era só um esqueleto até esta fatia (nenhum consumer implementado). Agora
+ele fecha o ciclo da saga: escuta a conclusão/falha da transferência via Kafka e registra uma
+notificação — histórico consultável pela conta dona da transferência.
+
+### Por que MongoDB, e não mais um Postgres
+
+Cada canal de notificação tem um formato completamente diferente: um e-mail carrega
+assunto+corpo HTML, um push carrega título+ícone+deep link, um SMS é só texto curto. Modelar
+isso numa tabela relacional viraria colunas majoritariamente nulas por linha (uma tabela por
+canal seria o outro extremo, mais rígido ainda para adicionar um canal novo). Um documento
+resolve isso naturalmente — cada `Notification` carrega os campos comuns (`title`, `body`,
+`createdAt`) mais um `metadata` (`Map<String, Object>`) cujo formato varia por `channel`
+(`EMAIL`, `PUSH`, `SMS`). É também o único serviço do projeto que não faz JOIN nenhum: a única
+consulta é "notificações de uma conta, mais recentes primeiro" — um índice composto
+(`accountId`, `createdAt`) resolve isso sem nenhuma modelagem relacional.
+`notification-service` é, por isso, o único banco não-Postgres do projeto (ver
+[Notification.java](notification-service/src/main/java/com/bancodigital/notification/domain/Notification.java)).
+
+### Da saga ao Kafka: o evento terminal que faltava
+
+Antes desta fatia, o fim de uma saga (sucesso ou falha) só era observável via WebSocket
+(`SagaStatusPublisher`, best-effort — se ninguém estiver assinando naquele instante, a mensagem
+se perde) e métricas. Não havia nenhum evento Kafka durável marcando "esta saga terminou", então
+nenhum outro serviço tinha como reagir de forma confiável. `SagaOrchestratorService` (ver
+`transfer-service/.../application/SagaOrchestratorService.java`) agora publica, via Outbox, um
+`TransferCompleted` ou `TransferFailed` (motivo incluído) exatamente nos mesmos quatro pontos
+onde já registrava a métrica `saga_transfers_total` — os dois eventos dividem o tópico
+`transfer.finished`, distinguidos pelo header `eventType` (mesmo padrão já usado em
+`transfer.compensate`).
+
+### Consumer, idempotência e DLQ
+
+`TransferFinishedConsumer` escuta `transfer.finished` e, para cada evento, cria uma única
+`Notification` (canal `EMAIL`, escolhido como representante — o domínio já tem
+`Notification.push`/`Notification.sms` prontos para quando um canal de envio real existir):
+destinatário da transferência recebe "transferência recebida"; remetente recebe "não concluída"
+com o motivo. Segue a mesma proteção de idempotência (Redis + fonte de verdade durável) e DLQ
+(`KafkaErrorHandlingConfig`, 1 tentativa + 2 retries → `transfer.finished-dlt`) já documentadas
+nas seções de Resiliência acima — só que a fonte de verdade da idempotência
+(`ProcessedEventRepository`) é uma collection MongoDB aqui, não uma tabela Postgres, já que este
+é o único banco do serviço. O span `saga.notify` e a métrica `saga_step_duration_seconds{step="notify"}`
+seguem exatamente o mesmo `SagaObservability.executarEtapa(...)` dos outros serviços, então a
+saga inteira — incluindo a notificação — continua aparecendo como um único trace no Jaeger.
+
+### Consulta: `GET /api/notifications/{accountId}`
+
+Histórico paginado, protegido pelo mesmo `JwtAuthenticationFilter`/`SecurityConfig` duplicados
+dos outros serviços autenticados — o `{accountId}` da URL precisa bater com o `accountId` do
+token, senão `403` (mesma convenção da tabela "Autorização por conta" acima).
+
+### Testes
+
+`NotificationRepositoryTest` (paginação/ordenação, Mongo real via Testcontainers),
+`TransferFinishedConsumerTest` (Kafka real: publica `TransferCompleted`/`TransferFailed` e
+confirma a `Notification` persistida, incluindo o cenário de evento reentregue duas vezes),
+`KafkaErrorHandlingConfigTest` (mesmo padrão de prova de DLQ dos outros serviços) e
+`NotificationControllerIT` (200 para o dono da conta, 403 para outra conta, 401 sem token).
+
 ## CI/CD
 
 Pipeline completo em [`.github/workflows/ci.yml`](.github/workflows/ci.yml), disparado a cada
@@ -551,17 +613,18 @@ GitHub Actions.
 ```mermaid
 flowchart LR
     subgraph Lint
-        L1[lint-java<br/>account/transfer/antifraud]
+        L1[lint-java<br/>account/transfer/antifraud/notification]
         L2[lint-frontend]
     end
     subgraph Testes
         T1[test-account-service]
         T2[test-transfer-service]
         T3[test-antifraud-service]
+        T5[test-notification-service]
         T4[test-frontend]
     end
     E2E["e2e-saga-tests<br/>TransferSagaHappyPathIT +<br/>TransferSagaCompensationIT"]
-    D[docker-build<br/>4 imagens, tag = SHA]
+    D[docker-build<br/>5 imagens, tag = SHA]
     R["deploy-railway<br/>(só push na main)"]
 
     T1 --> E2E
@@ -572,30 +635,34 @@ flowchart LR
     T1 --> D
     T2 --> D
     T3 --> D
+    T5 --> D
     T4 --> D
     E2E --> D
     D --> R
 ```
 
 - **Lint/format**: `spotless:check` (Java, regras leves — import order, imports não usados,
-  espaço em branco) nos três serviços; `ng lint` (ESLint + `angular-eslint`) no frontend.
+  espaço em branco) nos quatro serviços; `ng lint` (ESLint + `angular-eslint`) no frontend.
 - **Testes por serviço**: `./mvnw verify` roda unitários (Surefire) e de integração (Failsafe)
   no mesmo job — cada serviço usa `@Testcontainers` + `@ServiceConnection` (ver
-  `AbstractIntegrationTest` de cada um) para subir Postgres/Kafka/Redis reais automaticamente,
-  sem nenhuma configuração extra de infra no runner. `bank-frontend` roda Karma/Jasmine em
-  `ChromeHeadless`.
-- **Gate final da saga (`e2e-saga-tests`)**: instala os três serviços como jar no repositório
-  Maven local do runner (`mvn install -DskipTests` — os testes de cada um já rodaram nos jobs
-  acima) e roda `mvn verify` no módulo `e2e-tests`, que sobe os três `ApplicationContext` Spring
-  na mesma JVM contra Postgres/Kafka/Redis via Testcontainers e executa
-  `TransferSagaHappyPathIT` e `TransferSagaCompensationIT` de ponta a ponta. **Se
-  `TransferSagaCompensationIT` quebrar, este job falha e nada depois dele roda** — nem o build de
-  imagens, nem o deploy. É a garantia mais importante do pipeline.
+  `AbstractIntegrationTest` de cada um) para subir sua infra real automaticamente (Postgres/
+  Kafka/Redis nos três serviços da saga; Mongo/Kafka/Redis no notification-service), sem nenhuma
+  configuração extra no runner. `bank-frontend` roda Karma/Jasmine em `ChromeHeadless`.
+- **Gate final da saga (`e2e-saga-tests`)**: instala os três serviços da saga (account/transfer/
+  antifraud) como jar no repositório Maven local do runner (`mvn install -DskipTests` — os
+  testes de cada um já rodaram nos jobs acima) e roda `mvn verify` no módulo `e2e-tests`, que
+  sobe os três `ApplicationContext` Spring na mesma JVM contra Postgres/Kafka/Redis via
+  Testcontainers e executa `TransferSagaHappyPathIT` e `TransferSagaCompensationIT` de ponta a
+  ponta. **Se `TransferSagaCompensationIT` quebrar, este job falha e nada depois dele roda** —
+  nem o build de imagens, nem o deploy. É a garantia mais importante do pipeline.
+  `notification-service` não participa deste gate (não é parte do caminho transacional da saga,
+  só reage a ela via Kafka) — testado isoladamente em `test-notification-service`, incluindo o
+  próprio `TransferFinishedConsumerTest`. Ver "Próximo passo consciente" abaixo.
 - **Build de imagens**: só roda depois que lint + todos os testes + o gate da saga passarem.
-  Cada imagem (`account-service`, `transfer-service`, `antifraud-service`, `bank-frontend`) é
-  taggeada com o SHA do commit; em push na `main`, também publica no GitHub Container Registry
-  (`ghcr.io`, usando o `GITHUB_TOKEN` padrão do Actions — nenhum secret extra necessário só para
-  isso).
+  Cada imagem (`account-service`, `transfer-service`, `antifraud-service`, `notification-service`,
+  `bank-frontend`) é taggeada com o SHA do commit; em push na `main`, também publica no GitHub
+  Container Registry (`ghcr.io`, usando o `GITHUB_TOKEN` padrão do Actions — nenhum secret extra
+  necessário só para isso).
 - **Deploy (Railway)**: só em push na `main`, só depois de tudo acima ter passado. Depende do
   secret `RAILWAY_TOKEN` (Settings → Secrets and variables → Actions no GitHub) — sem ele
   configurado, o job registra um aviso e sai sem falhar, em vez de quebrar o pipeline.
@@ -604,3 +671,10 @@ flowchart LR
   desenvolvimento explicitamente nomeado `...-desenvolvimento-nao-usar-em-producao` como default
   de fallback local (`${JWT_SECRET:...}`), sobrescrito por variável de ambiente em qualquer
   ambiente real.
+
+**Próximo passo consciente**: o módulo `e2e-tests` hoje só sobe account-service, transfer-service
+e antifraud-service (o caminho transacional da saga). Incluir também o notification-service
+nesse mesmo `ApplicationContext` compartilhado e afirmar, no fim de `TransferSagaHappyPathIT`,
+que uma `Notification` foi persistida é a evolução natural — deixado fora desta fatia para não
+acoplar um consumer periférico (efeito colateral da saga, não parte dela) ao gate mais crítico do
+pipeline.
