@@ -76,8 +76,8 @@ antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no fro
 - **Frontend**: Angular 19 standalone, TypeScript, `@stomp/stompjs` (acompanhamento da saga em
   tempo real), ESLint
 - **Testes**: JUnit 5, Mockito, Testcontainers (postgresql, mongodb, kafka, redis), Karma/Jasmine
-  (frontend), um módulo `e2e-tests` dedicado que sobe os três serviços da saga na mesma JVM
-  contra infraestrutura real
+  (frontend), um módulo `e2e-tests` dedicado que sobe os três serviços da saga (e, no teste do
+  caminho feliz, também o notification-service) na mesma JVM contra infraestrutura real
 - **Observabilidade**: OpenTelemetry (tracing distribuído via otel-collector → Jaeger) +
   Micrometer/Prometheus (métricas) + Grafana (dashboard)
 - **CI/CD**: GitHub Actions (lint, testes com containers efêmeros, build de imagens Docker,
@@ -725,6 +725,7 @@ flowchart LR
     T1 --> E2E
     T2 --> E2E
     T3 --> E2E
+    T5 --> E2E
     L1 --> D
     L2 --> D
     T1 --> D
@@ -743,16 +744,16 @@ flowchart LR
   `AbstractIntegrationTest` de cada um) para subir sua infra real automaticamente (Postgres/
   Kafka/Redis nos três serviços da saga; Mongo/Kafka/Redis no notification-service), sem nenhuma
   configuração extra no runner. `bank-frontend` roda Karma/Jasmine em `ChromeHeadless`.
-- **Gate final da saga (`e2e-saga-tests`)**: instala os três serviços da saga (account/transfer/
-  antifraud) como jar no repositório Maven local do runner (`mvn install -DskipTests` — os
-  testes de cada um já rodaram nos jobs acima) e roda `mvn verify` no módulo `e2e-tests`, que
-  sobe os três `ApplicationContext` Spring na mesma JVM contra Postgres/Kafka/Redis via
-  Testcontainers e executa `TransferSagaHappyPathIT` e `TransferSagaCompensationIT` de ponta a
-  ponta. **Se `TransferSagaCompensationIT` quebrar, este job falha e nada depois dele roda** —
-  nem o build de imagens, nem o deploy. É a garantia mais importante do pipeline.
-  `notification-service` não participa deste gate (não é parte do caminho transacional da saga,
-  só reage a ela via Kafka) — testado isoladamente em `test-notification-service`, incluindo o
-  próprio `TransferFinishedConsumerTest`. Ver "Próximo passo consciente" abaixo.
+- **Gate final da saga (`e2e-saga-tests`)**: instala os quatro serviços como jar no repositório
+  Maven local do runner (`mvn install -DskipTests` — os testes de cada um já rodaram nos jobs
+  acima) e roda `mvn verify` no módulo `e2e-tests`, que sobe os quatro `ApplicationContext`
+  Spring na mesma JVM contra Postgres/MongoDB/Kafka/Redis via Testcontainers e executa
+  `TransferSagaHappyPathIT` e `TransferSagaCompensationIT` de ponta a ponta. **Se
+  `TransferSagaCompensationIT` quebrar, este job falha e nada depois dele roda** — nem o build de
+  imagens, nem o deploy. É a garantia mais importante do pipeline. `TransferSagaHappyPathIT`
+  também confirma, no final, que a saga concluída vira uma `Notification` real no
+  notification-service (consultada via HTTP contra o MongoDB efêmero do próprio teste) — fecha o
+  ciclo completo, não só o caminho transacional da saga.
 - **Build de imagens**: só roda depois que lint + todos os testes + o gate da saga passarem.
   Cada imagem (`account-service`, `transfer-service`, `antifraud-service`, `notification-service`,
   `bank-frontend`) é taggeada com o SHA do commit; em push na `main`, também publica no GitHub
@@ -766,10 +767,3 @@ flowchart LR
   desenvolvimento explicitamente nomeado `...-desenvolvimento-nao-usar-em-producao` como default
   de fallback local (`${JWT_SECRET:...}`), sobrescrito por variável de ambiente em qualquer
   ambiente real.
-
-**Próximo passo consciente**: o módulo `e2e-tests` hoje só sobe account-service, transfer-service
-e antifraud-service (o caminho transacional da saga). Incluir também o notification-service
-nesse mesmo `ApplicationContext` compartilhado e afirmar, no fim de `TransferSagaHappyPathIT`,
-que uma `Notification` foi persistida é a evolução natural — deixado fora desta fatia para não
-acoplar um consumer periférico (efeito colateral da saga, não parte dela) ao gate mais crítico do
-pipeline.

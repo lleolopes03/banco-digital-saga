@@ -198,11 +198,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Gate final: roda TODOS os testes acumulados do módulo e2e-tests — hoje isso
-  # é TransferSagaHappyPathIT (Fatia 7) e TransferSagaCompensationIT (Fatia 8).
-  # Os três serviços entram aqui como dependência de biblioteca (jar "thin"),
-  # então precisam ser instalados no repositório Maven local do runner antes —
-  # os testes de CADA serviço já rodaram nos jobs acima (needs); aqui é só
-  # empacotamento, sem re-testar.
+  # é TransferSagaHappyPathIT (Fatia 7, que desde a fatia de notificações também
+  # sobe notification-service e confirma a Notification persistida) e
+  # TransferSagaCompensationIT (Fatia 8). Os quatro serviços entram aqui como
+  # dependência de biblioteca (jar "thin"), então precisam ser instalados no
+  # repositório Maven local do runner antes — os testes de CADA serviço já
+  # rodaram nos jobs acima (needs); aqui é só empacotamento, sem re-testar.
   #
   # Se TransferSagaCompensationIT quebrar, este job falha e docker-build /
   # deploy-railway (que dependem dele) nunca rodam — essa é a garantia mais
@@ -210,7 +211,7 @@ jobs:
   # ---------------------------------------------------------------------------
   e2e-saga-tests:
     name: E2E saga gate (happy path + compensation)
-    needs: [test-account-service, test-transfer-service, test-antifraud-service]
+    needs: [test-account-service, test-transfer-service, test-antifraud-service, test-notification-service]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -232,6 +233,10 @@ jobs:
 
       - name: Install transfer-service jar (biblioteca para o e2e-tests)
         working-directory: transfer-service
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+
+      - name: Install notification-service jar (biblioteca para o e2e-tests)
+        working-directory: notification-service
         run: chmod +x mvnw && ./mvnw -B install -DskipTests
 
       - name: TransferSagaHappyPathIT + TransferSagaCompensationIT

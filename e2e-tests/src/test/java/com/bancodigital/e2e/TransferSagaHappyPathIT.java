@@ -12,6 +12,8 @@ import com.bancodigital.account.web.dto.LoginResponse;
 import com.bancodigital.account.web.dto.PageResponse;
 import com.bancodigital.account.web.dto.TransactionResponse;
 import com.bancodigital.antifraud.AntifraudApplication;
+import com.bancodigital.notification.NotificationApplication;
+import com.bancodigital.notification.web.dto.NotificationResponse;
 import com.bancodigital.transfer.TransferApplication;
 import com.bancodigital.transfer.domain.SagaStatus;
 import com.bancodigital.transfer.web.dto.CreateTransferRequest;
@@ -31,6 +33,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.client.RestTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.mongodb.MongoDBContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -44,18 +47,21 @@ import static org.assertj.core.api.Assertions.fail;
 
 /*
  * "Cartão de visita" do projeto: prova, de ponta a ponta e sem nenhuma chamada síncrona entre
- * serviços, que uma transferência percorre os três serviços via Kafka até ficar COMPLETED, com
- * o dinheiro efetivamente saindo da conta de origem e chegando na conta de destino.
+ * serviços, que uma transferência percorre os três serviços da saga via Kafka até ficar
+ * COMPLETED, com o dinheiro efetivamente saindo da conta de origem e chegando na conta de
+ * destino — e que a notificação de conclusão chega ao notification-service pelo mesmo caminho
+ * assíncrono (transfer.finished), fechando o ciclo completo da saga (ver README, seção
+ * "Notificações").
  *
- * Como account-service, antifraud-service e transfer-service são projetos Maven independentes
- * (cada um o seu próprio deploy), não há um "modo nativo" de rodar os três dentro do mesmo
- * teste. A abordagem aqui — depender deles como biblioteca e subir cada um como um
- * ApplicationContext Spring separado, na mesma JVM, todos apontando para a mesma infraestrutura
- * (Kafka real + um Postgres por serviço + Redis) via Testcontainers — é o jeito mais fiel de
- * reproduzir automaticamente, em CI, o que rodar os três com `docker-compose up` +
+ * Como os quatro serviços são projetos Maven independentes (cada um o seu próprio deploy), não
+ * há um "modo nativo" de rodar todos dentro do mesmo teste. A abordagem aqui — depender deles
+ * como biblioteca e subir cada um como um ApplicationContext Spring separado, na mesma JVM,
+ * todos apontando para a mesma infraestrutura (Kafka real + um Postgres por serviço da saga +
+ * MongoDB para o notification-service + Redis compartilhado) via Testcontainers — é o jeito mais
+ * fiel de reproduzir automaticamente, em CI, o que rodar os quatro com `docker-compose up` +
  * `mvn spring-boot:run` faz manualmente.
  *
- * Pré-requisito: os três serviços precisam estar instalados no repositório Maven local
+ * Pré-requisito: os quatro serviços precisam estar instalados no repositório Maven local
  * (`mvn install` em cada um) antes de rodar este teste — veja o pom.xml deste módulo.
  */
 class TransferSagaHappyPathIT {
@@ -66,41 +72,48 @@ class TransferSagaHappyPathIT {
     private static PostgreSQLContainer accountDb;
     private static PostgreSQLContainer transferDb;
     private static PostgreSQLContainer antifraudDb;
+    private static MongoDBContainer notificationDb;
     private static KafkaContainer kafka;
     private static GenericContainer<?> redis;
 
     private static ConfigurableApplicationContext accountContext;
     private static ConfigurableApplicationContext antifraudContext;
     private static ConfigurableApplicationContext transferContext;
+    private static ConfigurableApplicationContext notificationContext;
 
     private static final String ACCOUNT_BASE_URL = "http://localhost:18081";
     private static final String TRANSFER_BASE_URL = "http://localhost:18082";
+    private static final String NOTIFICATION_BASE_URL = "http://localhost:18084";
 
     private static final RestTemplate restTemplate = new RestTemplate();
 
     @BeforeAll
-    static void subirInfraestruturaETresServicos() {
+    static void subirInfraestruturaEQuatroServicos() {
         accountDb = new PostgreSQLContainer(DockerImageName.parse("postgres:16"));
         transferDb = new PostgreSQLContainer(DockerImageName.parse("postgres:16"));
         antifraudDb = new PostgreSQLContainer(DockerImageName.parse("postgres:16"));
+        notificationDb = new MongoDBContainer(DockerImageName.parse("mongo:7"));
         kafka = new KafkaContainer(DockerImageName.parse("apache/kafka-native:latest"));
         redis = new GenericContainer<>(DockerImageName.parse("redis:latest")).withExposedPorts(6379);
 
         accountDb.start();
         transferDb.start();
         antifraudDb.start();
+        notificationDb.start();
         kafka.start();
         redis.start();
 
         // Desde a Fatia 10 (idempotência), account-service e transfer-service também dependem
         // de Redis (IdempotentEventHandler), não só antifraud-service — por isso a propriedade
-        // é setada antes de subir QUALQUER um dos três contexts, não só antes do antifraud.
+        // é setada antes de subir QUALQUER um dos quatro contexts, não só antes do antifraud.
+        // notification-service usa a mesma instância pelo mesmo motivo (idempotência + blacklist
+        // JWT).
         System.setProperty("spring.data.redis.host", redis.getHost());
         System.setProperty("spring.data.redis.port", redis.getMappedPort(6379).toString());
         // Property de sistema (não application.yml) de propósito: como só um application.yml
         // "vence" a resolução de classpath (ver javadoc de definirPropriedadesDoServico), sem
-        // isso o account-service/transfer-service poderiam subir sem jwt.secret caso o
-        // application.yml do antifraud-service (que não declara essa chave) vencesse a corrida.
+        // isso os outros serviços poderiam subir sem jwt.secret caso o application.yml de outro
+        // serviço vencesse a corrida.
         System.setProperty("jwt.secret", "banco-digital-saga-jwt-secret-desenvolvimento-nao-usar-em-producao");
 
         definirPropriedadesDoServico("account-service", "18081", "account", accountDb);
@@ -111,31 +124,36 @@ class TransferSagaHappyPathIT {
 
         definirPropriedadesDoServico("transfer-service", "18082", "transfer", transferDb);
         transferContext = new SpringApplicationBuilder(TransferApplication.class).run();
+
+        definirPropriedadesMongoDoServico("notification-service", "18084", notificationDb);
+        notificationContext = new SpringApplicationBuilder(NotificationApplication.class).run();
     }
 
     @AfterAll
-    static void pararTresServicosEInfraestrutura() {
+    static void pararQuatroServicosEInfraestrutura() {
+        fecharSilenciosamente(notificationContext);
         fecharSilenciosamente(transferContext);
         fecharSilenciosamente(antifraudContext);
         fecharSilenciosamente(accountContext);
         pararSilenciosamente(redis);
         pararSilenciosamente(kafka);
+        pararSilenciosamente(notificationDb);
         pararSilenciosamente(antifraudDb);
         pararSilenciosamente(transferDb);
         pararSilenciosamente(accountDb);
     }
 
     /*
-     * Como os três serviços entram como dependência no mesmo classpath deste módulo, cada um
+     * Como os quatro serviços entram como dependência no mesmo classpath deste módulo, cada um
      * tem um application.yml no MESMO caminho ("classpath:/application.yml") dentro do seu
      * próprio jar — e a resolução de "classpath:application.yml" do Spring só enxerga UM deles
-     * (o primeiro encontrado), não os três. Por isso não dá pra confiar no application.yml de
+     * (o primeiro encontrado), não os quatro. Por isso não dá pra confiar no application.yml de
      * nenhum serviço aqui: toda propriedade que precisa ser diferente por serviço (nome,
      * migrations do Flyway, group-id do Kafka) precisa ser property de sistema, não
      * SpringApplicationBuilder.properties(...) — essas viram "default properties", a MENOR
      * precedência do Spring, perdendo justamente para o application.yml que "venceu" a corrida
      * do classpath. Property de sistema tem precedência bem mais alta que application.yml, e
-     * como os três contexts sobem em sequência (cada .run() bloqueia até terminar), não há
+     * como os quatro contexts sobem em sequência (cada .run() bloqueia até terminar), não há
      * risco de um contexto vazar a configuração do outro.
      */
     private static void definirPropriedadesDoServico(String nomeAplicacao, String porta,
@@ -147,6 +165,25 @@ class TransferSagaHappyPathIT {
         System.setProperty("spring.datasource.url", db.getJdbcUrl());
         System.setProperty("spring.datasource.username", db.getUsername());
         System.setProperty("spring.datasource.password", db.getPassword());
+        System.setProperty("spring.kafka.bootstrap-servers", kafka.getBootstrapServers());
+    }
+
+    /*
+     * Mesma ideia de definirPropriedadesDoServico, só que para notification-service (único
+     * serviço que usa MongoDB, não Postgres/Flyway — ver README, seção "Notificações"). O
+     * driver do Mongo 5.x exige spring.mongodb.representation.uuid explícito para codificar
+     * campos UUID (accountId, transferId) — normalmente vem do application.yml do próprio
+     * serviço, mas esse harness não enxerga application.yml nenhum (ver comentário acima), então
+     * precisa ser property de sistema aqui também.
+     */
+    private static void definirPropriedadesMongoDoServico(String nomeAplicacao, String porta, MongoDBContainer db) {
+        System.setProperty("spring.application.name", nomeAplicacao);
+        System.setProperty("spring.kafka.consumer.group-id", nomeAplicacao);
+        System.setProperty("server.port", porta);
+        System.setProperty("spring.mongodb.host", db.getHost());
+        System.setProperty("spring.mongodb.port", String.valueOf(db.getMappedPort(27017)));
+        System.setProperty("spring.mongodb.database", "notification_db");
+        System.setProperty("spring.mongodb.representation.uuid", "standard");
         System.setProperty("spring.kafka.bootstrap-servers", kafka.getBootstrapServers());
     }
 
@@ -196,6 +233,14 @@ class TransferSagaHappyPathIT {
         PageResponse<TransactionResponse> extratoDestino = consultarExtrato(contaDestinoId, tokenDestino);
         assertThat(extratoDestino.conteudo())
                 .anyMatch(t -> t.type().name().equals("TRANSFER_IN") && t.amount().compareTo(new BigDecimal("300.00")) == 0);
+
+        // Fecha o ciclo completo da saga: TransferCompleted (publicado pelo transfer-service via
+        // Outbox no mesmo instante em que a saga chega a COMPLETED) chega ao notification-service
+        // via Kafka (tópico transfer.finished) e vira uma Notification persistida no MongoDB,
+        // consultável pela conta destinatária.
+        NotificationResponse notificacao = aguardarNotificacao(contaDestinoId, tokenDestino);
+        assertThat(notificacao.transferId()).isEqualTo(transferId);
+        assertThat(notificacao.title()).isEqualTo("Transferência recebida");
     }
 
     /*
@@ -271,6 +316,27 @@ class TransferSagaHappyPathIT {
         }
         fail("Saga " + transferId + " não chegou a um estado final dentro do timeout. Último status observado: "
                 + (ultimaResposta != null ? ultimaResposta.status() : "nenhum"));
+        return null;
+    }
+
+    /*
+     * A notificação é criada de forma assíncrona (Kafka), então pode não existir ainda no
+     * instante em que a saga acaba de chegar a COMPLETED — daí o polling, mesmo padrão de
+     * aguardarStatusFinal.
+     */
+    private NotificationResponse aguardarNotificacao(UUID accountId, String token) {
+        Instant prazo = Instant.now().plus(TIMEOUT_SAGA);
+        while (Instant.now().isBefore(prazo)) {
+            com.bancodigital.notification.web.dto.PageResponse<NotificationResponse> pagina = restTemplate.exchange(
+                    NOTIFICATION_BASE_URL + "/api/notifications/" + accountId, HttpMethod.GET, autenticado(null, token),
+                    new ParameterizedTypeReference<com.bancodigital.notification.web.dto.PageResponse<NotificationResponse>>() {
+                    }).getBody();
+            if (pagina != null && !pagina.conteudo().isEmpty()) {
+                return pagina.conteudo().get(0);
+            }
+            sleep(INTERVALO_POLLING);
+        }
+        fail("Nenhuma notificação apareceu para a conta " + accountId + " dentro do timeout.");
         return null;
     }
 

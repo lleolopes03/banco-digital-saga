@@ -13,11 +13,13 @@
 	<version>0.0.1-SNAPSHOT</version>
 	<name>e2e-tests</name>
 	<description>
-		Harness de teste ponta a ponta da saga de transferência: sobe os três serviços
+		Harness de teste ponta a ponta da saga de transferência: sobe os três serviços da saga
 		(account-service, antifraud-service, transfer-service) como contexts Spring
 		independentes na mesma JVM, contra Kafka/Postgres/Redis reais via Testcontainers, e
-		dirige o fluxo via HTTP. Pré-requisito: os 3 serviços precisam ter sido instalados no
-		repositório Maven local (mvn install) antes de rodar este módulo, já que eles são
+		dirige o fluxo via HTTP. TransferSagaHappyPathIT também sobe notification-service (contra
+		MongoDB real) e confirma que a saga concluída gera uma notificação de verdade — ver
+		README, seção "Notificações". Pré-requisito: os 4 serviços precisam ter sido instalados
+		no repositório Maven local (mvn install) antes de rodar este módulo, já que eles são
 		usados aqui como dependência de biblioteca (jar "thin", não o executável).
 	</description>
 	<properties>
@@ -43,6 +45,12 @@
 			<scope>test</scope>
 		</dependency>
 		<dependency>
+			<groupId>com.bancodigital</groupId>
+			<artifactId>notification-service</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
@@ -60,6 +68,11 @@
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-mongodb</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
