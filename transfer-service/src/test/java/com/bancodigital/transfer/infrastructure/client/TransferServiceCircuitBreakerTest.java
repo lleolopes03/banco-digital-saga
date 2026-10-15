@@ -3,6 +3,7 @@ package com.bancodigital.transfer.infrastructure.client;
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.matching;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -88,7 +89,10 @@ class TransferServiceCircuitBreakerTest extends AbstractIntegrationTest {
         assertThat(response.getBody().transferId()).isNotNull();
         assertThat(circuitBreaker().getState()).isEqualTo(CircuitBreaker.State.CLOSED);
         assertThat(circuitBreaker().getMetrics().getNumberOfFailedCalls()).isZero();
-        accountServiceMock.verify(1, getRequestedFor(urlPathMatching("/api/accounts/.*/balance")));
+        // O JWT de quem cria a transferencia precisa chegar ao account-service: sem ele a rota
+        // /balance (protegida) responde 401 e a pre-checagem cai sempre no fallback.
+        accountServiceMock.verify(1, getRequestedFor(urlPathMatching("/api/accounts/.*/balance"))
+                .withHeader("Authorization", matching("Bearer .+")));
     }
 
     @Test
@@ -138,5 +142,31 @@ class TransferServiceCircuitBreakerTest extends AbstractIntegrationTest {
         // O ponto central deste teste: a chamada real ao account-service (mockado) foi tentada
         // de novo, em vez de cair direto no fallback.
         accountServiceMock.verify(1, getRequestedFor(urlPathMatching("/api/accounts/.*/balance")));
+    }
+
+    /*
+     * Com o JWT repassado, a pre-checagem sincrona de saldo volta a funcionar de verdade: saldo
+     * menor que o valor recusa na entrada (422) em vez de abrir uma saga que so falharia depois,
+     * por timeout. Reseta o circuito para nao depender do estado deixado pelos testes anteriores.
+     */
+    @Test
+    @Order(4)
+    void saldoInsuficienteInformadoPeloAccountServiceRecusaNaEntradaComUnprocessableEntity() {
+        circuitBreaker().reset();
+        accountServiceMock.resetRequests();
+        accountServiceMock.stubFor(get(urlPathMatching("/api/accounts/.*/balance"))
+                .willReturn(aResponse().withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"accountId\":\"" + UUID.randomUUID() + "\",\"balance\":10.00}")));
+
+        UUID accountOrigemId = UUID.randomUUID();
+        ResponseEntity<String> saldoInsuficiente = restTemplate.exchange("/api/transfers", HttpMethod.POST,
+                autenticado(new CreateTransferRequest(accountOrigemId, UUID.randomUUID(), new BigDecimal("100.00")),
+                        accountOrigemId),
+                String.class);
+
+        // Compara o codigo numerico: no Spring Framework 7 o 422 e HttpStatus.UNPROCESSABLE_CONTENT
+        // (UNPROCESSABLE_ENTITY ficou como constante obsoleta distinta), mas o status HTTP e o mesmo.
+        assertThat(saldoInsuficiente.getStatusCode().value()).isEqualTo(422);
     }
 }
