@@ -3,6 +3,7 @@ package com.bancodigital.notification.domain;
 import java.time.Instant;
 import java.util.UUID;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 /**
@@ -17,6 +18,13 @@ public class ProcessedEvent {
     @Id
     private UUID eventId;
 
+    /*
+     * Indice TTL: o MongoDB apaga o registro sozinho 14 dias depois. Mesma janela de retencao
+     * dos processed_events dos servicos Postgres (RetentionCleanupScheduler): precisa cobrir o
+     * periodo em que o Kafka ainda pode reentregar a mensagem (retencao padrao do topico: 7 dias).
+     * O monitor de TTL do MongoDB roda a cada ~60s.
+     */
+    @Indexed(expireAfter = "14d")
     private Instant processedAt;
 
     protected ProcessedEvent() {

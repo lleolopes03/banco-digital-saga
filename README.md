@@ -66,6 +66,7 @@ antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no fro
 - [Tracing distribuído da saga (OpenTelemetry)](#tracing-distribuído-da-saga-opentelemetry)
 - [Antifraude](#antifraude)
 - [Notificações (MongoDB)](#notificações-mongodb)
+- [Retenção de dados (Outbox e idempotência)](#retenção-de-dados-outbox-e-idempotência)
 - [CI/CD](#cicd)
 
 ## Stack
@@ -143,6 +144,13 @@ de origem/destino pode acompanhar aquela transferência específica.
    `transfer-service` dispara uma transação compensatória que devolve o valor reservado/debitado
    à conta de origem. `notification-service` informa o usuário do resultado (sucesso ou
    estorno).
+
+**Falha rápida na reserva**: quando o `account-service` não consegue reservar o saldo
+(`SALDO_INSUFICIENTE`), ele publica `TransferReservationFailed` no mesmo tópico de
+`TransferReserved` (distinguido pelo header `eventType`). O `transfer-service` falha a saga na
+hora, registra o motivo real em `failureReason` e publica `TransferFailed` para o
+`notification-service`, em vez de esperar o timeout da saga. Se a saga já tiver sido falhada pelo
+timeout ou já tiver avançado de estado, o evento é ignorado.
 
 ## Estrutura do repositório
 
@@ -702,7 +710,30 @@ token, senão `403` (mesma convenção da tabela "Autorização por conta" acima
 `TransferFinishedConsumerTest` (Kafka real: publica `TransferCompleted`/`TransferFailed` e
 confirma a `Notification` persistida, incluindo o cenário de evento reentregue duas vezes),
 `KafkaErrorHandlingConfigTest` (mesmo padrão de prova de DLQ dos outros serviços) e
-`NotificationControllerIT` (200 para o dono da conta, 403 para outra conta, 401 sem token).
+`NotificationControllerIT` (200 para o dono da conta, 403 para outra conta, 401 sem token) e
+`MongoIndexesTest`, que garante que os índices declarados existem de fato no banco (o índice
+composto `accountId_createdAt` e o TTL de `processed_events`). O Spring Data MongoDB vem com a
+criação automática de índices desligada; por isso `spring.data.mongodb.auto-index-creation` está
+`true` — um teste de repositório comum não pega a ausência, a query só fica lenta.
+
+## Retenção de dados (Outbox e idempotência)
+
+`outbox_events` e `processed_events` só crescem: cada saga deixa linhas para sempre. Cada
+serviço com Outbox (`account`, `transfer`, `antifraud`) tem um `RetentionCleanupScheduler` que
+apaga em lotes de 1.000, cada lote numa transação curta:
+
+| Tabela | O que apaga | Padrão | Propriedade |
+|---|---|---|---|
+| `outbox_events` | só `PUBLISHED` mais antigos que a janela; `PENDING` nunca é tocado | 7 dias | `retention.outbox` |
+| `processed_events` | registros mais antigos que a janela | 14 dias | `retention.processed-events` |
+
+A janela de `processed_events` precisa cobrir o tempo em que o Kafka ainda pode reentregar uma
+mensagem (retenção padrão do tópico: 7 dias), porque é a fonte de verdade da idempotência quando
+a chave do Redis (TTL de 24h) expira. Daí os 14 dias, com folga. Execução a cada hora
+(`retention.cleanup-interval`), com atraso inicial de 5 minutos (`retention.initial-delay`).
+Índices parciais em `published_at` e `processed_at` (migrations Flyway) sustentam os `DELETE`s.
+No `notification-service` (MongoDB) o mesmo papel é feito por um índice TTL de 14 dias em
+`processed_events`.
 
 ## CI/CD
 

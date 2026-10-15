@@ -1,6 +1,13 @@
 spring:
   application:
     name: notification-service
+  data:
+    mongodb:
+      # Desde o Spring Data MongoDB 3.0 a criacao automatica de indices vem DESLIGADA: sem isto o
+      # @CompoundIndex de Notification (accountId + createdAt, usado pelo GET /api/notifications)
+      # e o indice TTL de ProcessedEvent nunca eram criados — so existia o _id. O volume deste
+      # servico e pequeno e o schema e controlado por nos, entao criar na subida e adequado.
+      auto-index-creation: true
   mongodb:
     representation:
       # Sem isso, o driver do MongoDB recusa a codificação de qualquer campo UUID (accountId,
