@@ -30,7 +30,7 @@ antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no fro
 
 ## Destaques técnicos
 
-- **Saga coreografada com compensação real** — não é rollback de transação de banco; cada etapa
+- **Saga orquestrada com compensação real** — não é rollback de transação de banco; cada etapa
   (reserva, antifraude, débito, crédito) tem sua própria compensação, disparada por evento.
 - **Padrão Outbox + propagação de trace através do Kafka** — nenhum evento se perde entre a
   transação de negócio e a publicação, e a saga inteira aparece como **um único trace** no
@@ -276,7 +276,9 @@ uma partição sem consumidor não derruba quem publica). A única chamada sínc
 otimização em `transfer-service`: antes de abrir uma saga inteira (`POST /api/transfers`), ele
 consulta `GET /api/accounts/{id}/balance` no `account-service` via `RestClient`, para recusar de
 cara (`422 Unprocessable Entity`) um caso óbvio de saldo insuficiente sem gastar uma saga completa
-com isso.
+com isso. A chamada repassa o JWT de quem está criando a transferência (header `Authorization`
+da requisição corrente), porque o `account-service` exige autenticação nessa rota — sem isso a
+pré-checagem voltaria sempre `401` e cairia no fallback sem ninguém notar.
 
 Essa chamada é protegida por um circuit breaker Resilience4j (`AccountServiceClient`, em
 `transfer-service/src/main/java/com/bancodigital/transfer/infrastructure/client/`):
