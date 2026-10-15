@@ -6,6 +6,7 @@ import com.bancodigital.transfer.domain.SagaEvent;
 import com.bancodigital.transfer.domain.SagaInstance;
 import com.bancodigital.transfer.domain.SagaInstanceNotFoundException;
 import com.bancodigital.transfer.domain.SagaStateMachine;
+import com.bancodigital.transfer.domain.SagaStatus;
 import com.bancodigital.transfer.domain.event.AntiFraudApproved;
 import com.bancodigital.transfer.domain.event.AntiFraudRejected;
 import com.bancodigital.transfer.domain.event.CreditConfirmed;
@@ -20,6 +21,7 @@ import com.bancodigital.transfer.domain.event.ReverseDebitRequested;
 import com.bancodigital.transfer.domain.event.TransferCompleted;
 import com.bancodigital.transfer.domain.event.TransferFailed;
 import com.bancodigital.transfer.domain.event.TransferRequested;
+import com.bancodigital.transfer.domain.event.TransferReservationFailed;
 import com.bancodigital.transfer.domain.event.TransferReserved;
 import com.bancodigital.transfer.infrastructure.client.AccountServiceClient;
 import com.bancodigital.transfer.infrastructure.client.BalanceResponse;
@@ -34,6 +36,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,6 +51,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SagaOrchestratorService {
 
+    private static final Logger log = LoggerFactory.getLogger(SagaOrchestratorService.class);
     private static final String AGGREGATE_TYPE_TRANSFER = "Transfer";
     private static final String MOTIVO_TIMEOUT = "SAGA_TIMEOUT";
     private static final ObjectMapper OUTBOX_PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
@@ -141,6 +146,32 @@ public class SagaOrchestratorService {
         stateMachine.transicionar(saga, SagaEvent.SOLICITAR_ANTIFRAUDE);
         sagaInstanceRepository.save(saga);
         sagaStatusPublisher.publish(saga);
+    }
+
+    /*
+     * A reserva falhou (hoje: SALDO_INSUFICIENTE): nenhum dinheiro foi reservado, então não há o
+     * que compensar — a saga só termina em FAILED, já com o motivo REAL, e o usuário é avisado
+     * via TransferFailed. Antes deste tratamento o evento era ignorado e a saga ficava em STARTED
+     * até o SagaTimeoutScheduler falhá-la como SAGA_TIMEOUT (2 min depois, escondendo a causa).
+     *
+     * Só age sobre uma saga ainda em STARTED: se o timeout já a falhou (ou o evento foi
+     * reentregue), o evento é ignorado em vez de lançar InvalidSagaTransitionException, que
+     * mandaria uma mensagem perfeitamente legítima para a DLQ.
+     */
+    @Transactional
+    public void processarReservaFalhou(TransferReservationFailed event) {
+        SagaInstance saga = buscarSaga(event.transferId());
+        if (saga.getStatus() != SagaStatus.STARTED) {
+            log.info("TransferReservationFailed ignorado para a saga {}: status atual {} (esperado STARTED)",
+                    saga.getId(), saga.getStatus());
+            return;
+        }
+        saga.registrarMotivoFalha(event.motivo());
+        stateMachine.transicionar(saga, SagaEvent.FALHAR);
+        sagaInstanceRepository.save(saga);
+        sagaStatusPublisher.publish(saga);
+        sagaObservability.registrarSagaFinalizada("FAILED");
+        publicarTransferFailed(saga);
     }
 
     @Transactional

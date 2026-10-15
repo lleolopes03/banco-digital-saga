@@ -21,6 +21,7 @@ import com.bancodigital.transfer.domain.event.CreditFailed;
 import com.bancodigital.transfer.domain.event.DebitConfirmed;
 import com.bancodigital.transfer.domain.event.DebitReversed;
 import com.bancodigital.transfer.domain.event.ReservationReleased;
+import com.bancodigital.transfer.domain.event.TransferReservationFailed;
 import com.bancodigital.transfer.domain.event.TransferReserved;
 import com.bancodigital.transfer.infrastructure.client.AccountServiceClient;
 import com.bancodigital.transfer.infrastructure.client.BalanceResponse;
@@ -358,5 +359,56 @@ class SagaOrchestratorServiceTest {
         assertThat(sagaCaptor.getValue().getId()).isEqualTo(transferId);
         assertThat(sagaCaptor.getValue().getIdempotencyKey()).isEqualTo("chave-nova");
         verify(outboxEventRepository).save(any());
+    }
+
+    @Test
+    void deveFalharSagaComMotivoRealEPublicarTransferFailedQuandoReservaFalha() {
+        SagaInstance saga = criarSagaNoEstado(SagaStatus.STARTED);
+        when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
+
+        orchestrator.processarReservaFalhou(
+                new TransferReservationFailed(saga.getId(), "SALDO_INSUFICIENTE", Instant.now()));
+
+        assertThat(saga.getStatus()).isEqualTo(SagaStatus.FAILED);
+        assertThat(saga.getFailureReason()).isEqualTo("SALDO_INSUFICIENTE");
+        verify(sagaInstanceRepository).save(saga);
+        verify(sagaStatusPublisher).publish(saga);
+
+        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxCaptor.capture());
+        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferFailed");
+        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(saga.getId());
+        // nenhum comando de compensacao: nao ha o que desfazer, nada foi reservado
+        assertThat(outboxCaptor.getValue().getEventType()).isNotEqualTo("ReleaseReservedAmount");
+    }
+
+    @Test
+    void deveIgnorarFalhaDeReservaQuandoSagaJaFoiFalhadaPorTimeout() {
+        // o SagaTimeoutScheduler pode ter vencido a corrida: o evento (legitimo) chega depois
+        SagaInstance saga = criarSagaNoEstado(SagaStatus.STARTED);
+        saga.registrarMotivoFalha("SAGA_TIMEOUT");
+        new SagaStateMachine().transicionar(saga, SagaEvent.FALHAR);
+        when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
+
+        orchestrator.processarReservaFalhou(
+                new TransferReservationFailed(saga.getId(), "SALDO_INSUFICIENTE", Instant.now()));
+
+        assertThat(saga.getStatus()).isEqualTo(SagaStatus.FAILED);
+        assertThat(saga.getFailureReason()).isEqualTo("SAGA_TIMEOUT");
+        verify(sagaInstanceRepository, never()).save(any());
+        verify(outboxEventRepository, never()).save(any());
+    }
+
+    @Test
+    void deveIgnorarFalhaDeReservaQuandoSagaJaAvancouDeEstado() {
+        SagaInstance saga = criarSagaNoEstado(SagaStatus.RESERVED);
+        when(sagaInstanceRepository.findById(saga.getId())).thenReturn(Optional.of(saga));
+
+        orchestrator.processarReservaFalhou(
+                new TransferReservationFailed(saga.getId(), "SALDO_INSUFICIENTE", Instant.now()));
+
+        assertThat(saga.getStatus()).isEqualTo(SagaStatus.RESERVED);
+        verify(sagaInstanceRepository, never()).save(any());
+        verify(outboxEventRepository, never()).save(any());
     }
 }

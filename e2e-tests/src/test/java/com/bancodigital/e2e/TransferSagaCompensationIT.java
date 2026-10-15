@@ -232,6 +232,28 @@ class TransferSagaCompensationIT {
                 .anyMatch(t -> t.type().name().equals("REVERSAL") && t.amount().compareTo(valor) == 0);
     }
 
+    /*
+     * A reserva falha por saldo insuficiente no account-service (nesta harness a pre-checagem
+     * sincrona de saldo do transfer-service nao enxerga o account-service, entao a saga abre e a
+     * reserva e que recusa). Antes do tratamento de TransferReservationFailed, a saga ficava em
+     * STARTED ate o SagaTimeoutScheduler falha-la como SAGA_TIMEOUT 2 minutos depois — fora da
+     * janela de 30s deste teste. Agora ela falha na hora, com o motivo REAL.
+     */
+    @Test
+    void deveFalharRapidoComMotivoRealQuandoSaldoEInsuficienteNaReserva() {
+        UUID contaOrigemId = criarConta("Origem Sem Saldo", "22233344407");
+        String tokenOrigem = obterToken(contaOrigemId);
+        depositar(contaOrigemId, new BigDecimal("100.00"), tokenOrigem);
+        UUID contaDestinoId = criarConta("Destino Sem Saldo", "22233344408");
+
+        UUID transferId = iniciarTransferencia(contaOrigemId, contaDestinoId, new BigDecimal("500.00"), tokenOrigem);
+
+        TransferResponse sagaFinal = aguardarStatusFinal(transferId, tokenOrigem);
+        assertThat(sagaFinal.status()).isEqualTo(SagaStatus.FAILED);
+        assertThat(sagaFinal.failureReason()).isEqualTo("SALDO_INSUFICIENTE");
+        assertThat(consultarSaldo(contaOrigemId, tokenOrigem)).isEqualByComparingTo("100.00");
+    }
+
     private void bloquearConta(UUID contaId) {
         AccountRepository accountRepository = accountContext.getBean(AccountRepository.class);
         Account conta = accountRepository.findById(contaId).orElseThrow();
