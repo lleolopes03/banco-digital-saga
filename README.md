@@ -627,11 +627,15 @@ processo (Prometheus levando 401 do `SecurityConfig` da Fatia 13 — corrigido l
 
 > **Atualização (fatia de notificações)**: `TransferCompleted`/`TransferFailed` são publicados
 > pelo mesmo `publicarEvento(...)` que já captura o `traceparent` atual, então o mesmo trace
-> agora deveria se estender até `saga.notify` em `notification-service` (`Services 4`) ao repetir
-> o passo 4 acima. Isso reaproveita o mecanismo já provado por `TracingContextPropagationTest`
-> (account-service), mas não foi verificado manualmente no Jaeger nem coberto por um teste
-> dedicado de propagação nesta fatia — `TransferFinishedConsumerTest` confirma que a
-> `Notification` é criada, não que o trace chega intacto.
+> se estende até `saga.notify` em `notification-service`. Isso reaproveita o mecanismo provado
+> por `TracingContextPropagationTest` (account-service) e **foi verificado manualmente no
+> Jaeger** subindo os quatro serviços: cada transferência que percorre a saga inteira aparece
+> como um único trace com `Services 4` (`account-service`, `antifraud-service`,
+> `notification-service`, `transfer-service`) e entre ~16 e ~23 spans, incluindo `saga.notify`;
+> nos caminhos de falha o mesmo trace também traz `saga.compensate`. Ainda não há um teste
+> automatizado dedicado de propagação para o notification-service —
+> `TransferFinishedConsumerTest` confirma que a `Notification` é criada, não que o trace chega
+> intacto.
 
 ## Antifraude
 

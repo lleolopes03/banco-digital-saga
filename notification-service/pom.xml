@@ -72,6 +72,12 @@
 			<artifactId>spring-boot-starter-opentelemetry</artifactId>
 		</dependency>
 		<dependency>
+			<!-- Sem o registry, /actuator/prometheus não existe e o Prometheus não consegue
+			     fazer scrape deste serviço (saga_step_duration_seconds{step="notify"}). -->
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
+		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
