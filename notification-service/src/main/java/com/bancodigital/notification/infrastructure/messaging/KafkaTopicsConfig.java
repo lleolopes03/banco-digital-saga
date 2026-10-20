@@ -8,23 +8,12 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaAdmin;
 
-/*
- * Declara os tópicos que este serviço PRODUZ ou CONSOME, com mais de uma partição. Sem isto o
- * broker cria cada tópico sob demanda com 1 partição, e um consumer com 1 partição processa uma
- * mensagem de cada vez — foi o que formou fila no primeiro salto da saga sob carga (ver
- * load-tests/README.md).
- *
- * Por que declarar também os tópicos consumidos: o KafkaAdmin roda antes de os listeners deste
- * serviço iniciarem, então quem sobe primeiro cria o tópico já com o número certo de partições.
- * Se só o produtor declarasse, um consumer que assina antes disso faria o broker criar o tópico
- * com 1 partição; o aumento posterior só seria percebido pelos consumers no refresh de metadata,
- * e as mensagens das partições novas ficariam sem consumidor (as sagas parariam em STARTED).
- *
- * A chave de cada mensagem é o transferId (aggregateId do Outbox), então todos os eventos de uma
- * saga caem na mesma partição e continuam em ordem; sagas diferentes passam a ser processadas em
- * paralelo (spring.kafka.listener.concurrency). O KafkaAdmin cria o tópico se não existe e aumenta
- * as partições se já existe com menos (partições nunca diminuem). Contagem e réplicas são
- * configuráveis; réplicas = 1 só serve para broker único (dev).
+/**
+ * Declara os tópicos que o serviço produz ou consome, com várias partições: a chave é o transferId, então os
+ * eventos de uma saga ficam em ordem na mesma partição e sagas diferentes rodam em paralelo.
+ * Declarar também os consumidos garante que quem sobe primeiro crie o tópico certo antes de iniciar seus
+ * listeners; um tópico criado sob demanda com 1 partição e ampliado depois deixaria mensagens sem
+ * consumidor até o refresh de metadata.
  */
 @Configuration(proxyBeanMethods = false)
 public class KafkaTopicsConfig {

@@ -41,15 +41,9 @@ public class OutboxEvent {
     @Column(name = "published_at")
     private Instant publishedAt;
 
-    /*
-     * Traceparent (W3C) capturado do contexto de trace ATIVO no momento em que este evento foi
-     * criado (dentro do método de negócio, nunca no OutboxPublisherScheduler) — é isso que
-     * permite ao publisher, rodando minutos depois numa thread de scheduling sem nenhuma relação
-     * com a transação original, colocar o header correto na mensagem Kafka e manter a saga
-     * inteira como um único trace mesmo atravessando a fronteira assíncrona do Outbox. Nullable
-     * porque eventos publicados antes desta coluna existir (ou em cenários de teste que não
-     * configuram tracing) simplesmente não propagam contexto — o consumer trata isso como início
-     * de um trace novo, nunca como erro.
+    /**
+     * Traceparent (W3C) do trace ativo na criação do evento; o scheduler o copia para o header Kafka e a saga
+     * segue como um único trace. Nulo quando não há tracing: o consumer abre então um trace novo.
      */
     @Column(name = "trace_context")
     private String traceContext;

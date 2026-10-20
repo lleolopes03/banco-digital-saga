@@ -49,17 +49,13 @@ public class TransferInitiationService {
                 temIdempotencyKey ? idempotencyKey : null);
 
         try {
-            // saveAndFlush (não save) para que uma violação do índice único parcial de
-            // idempotency_key seja lançada já aqui dentro, e não só no commit da transação —
-            // só assim dá pra capturá-la e cair no caminho de corrida abaixo.
+            // saveAndFlush: a violação do índice único de idempotency_key precisa estourar aqui, não no commit.
             sagaInstanceRepository.saveAndFlush(saga);
         } catch (DataIntegrityViolationException ex) {
             if (!temIdempotencyKey) {
                 throw ex;
             }
-            // Corrida rara: duas requisições concorrentes com a mesma Idempotency-Key. O índice
-            // único garantiu que só uma delas persistiu; devolvemos a saga que realmente venceu em
-            // vez de propagar o erro.
+            // Corrida entre duas requisições com a mesma Idempotency-Key: devolve a saga que venceu.
             return sagaInstanceRepository.findByIdempotencyKey(idempotencyKey)
                     .map(SagaInstance::getId)
                     .orElseThrow(() -> ex);
@@ -70,10 +66,8 @@ public class TransferInitiationService {
     }
 
     /*
-     * Validação síncrona e best-effort: evita abrir uma saga inteira para um caso óbvio de saldo
-     * insuficiente. Se o account-service estiver indisponível, AccountServiceClient degrada
-     * graciosamente (Optional vazio) e esta checagem é simplesmente pulada — a validação definitiva
-     * continua sendo a reserva assíncrona feita mais adiante na saga.
+     * Best-effort: evita abrir uma saga para um saldo obviamente insuficiente. Se o account-service estiver
+     * indisponível a checagem é pulada; a validação definitiva é a reserva assíncrona da saga.
      */
     private void validarSaldoPrevio(UUID accountOrigemId, BigDecimal valor) {
         Optional<BalanceResponse> saldo = accountServiceClient.consultarSaldo(accountOrigemId);

@@ -25,10 +25,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Orquestra a saga de transferência: cada método corresponde a um evento recebido e aplica a
- * transição correspondente via {@link SagaStateMachine}, publicando (via {@link SagaOutboxPublisher})
- * o próximo comando da saga quando necessário. Nenhum método aqui chama outro serviço diretamente —
- * tudo é assíncrono via Kafka. Abrir uma transferência é do {@link TransferInitiationService}.
+ * Conduz a saga: cada método trata um evento recebido, aplica a transição na {@link SagaStateMachine} e publica o
+ * próximo comando via {@link SagaOutboxPublisher}. Tudo é assíncrono via Kafka; abrir uma transferência é do
+ * {@link TransferInitiationService}.
  */
 @Service
 public class SagaOrchestratorService {
@@ -42,8 +41,7 @@ public class SagaOrchestratorService {
     private final SagaOutboxPublisher outboxPublisher;
     private final SagaObservability sagaObservability;
     private final SagaStatusPublisher sagaStatusPublisher;
-    // SagaStateMachine é domínio puro, sem @Component de propósito, então instanciamos direto em vez
-    // de injetar via Spring.
+    // Domínio puro, sem @Component de propósito.
     private final SagaStateMachine stateMachine = new SagaStateMachine();
 
     public SagaOrchestratorService(SagaInstanceRepository sagaInstanceRepository,
@@ -56,12 +54,7 @@ public class SagaOrchestratorService {
         this.sagaStatusPublisher = sagaStatusPublisher;
     }
 
-    /*
-     * A reserva de saldo é o primeiro passo de negócio da saga (antes de qualquer checagem de
-     * fraude). Quando o account-service confirma que reservou o saldo, a checagem de fraude — que o
-     * antifraud-service já processa de forma independente, escutando o mesmo evento — está em
-     * andamento; por isso aplicamos as duas transições (RESERVED e ANTIFRAUD_PENDING) em sequência.
-     */
+    /** A reserva confirmada deixa a checagem de fraude em andamento, então aplica as duas transições em sequência. */
     @Transactional
     public void processarReservaConfirmada(TransferReserved event) {
         SagaInstance saga = buscarSaga(event.transferId());
@@ -70,11 +63,9 @@ public class SagaOrchestratorService {
     }
 
     /*
-     * A reserva falhou (hoje: SALDO_INSUFICIENTE): nenhum dinheiro foi reservado, então não há o que
-     * compensar — a saga termina em FAILED já com o motivo REAL, e o usuário é avisado via
-     * TransferFailed. Só age sobre uma saga ainda em STARTED: se o timeout já a falhou (ou o evento
-     * foi reentregue), o evento é ignorado em vez de lançar InvalidSagaTransitionException, que
-     * mandaria uma mensagem perfeitamente legítima para a DLQ.
+     * Nada foi reservado, então não há o que compensar: a saga falha já com o motivo real. Ignora o evento se a
+     * saga saiu de STARTED (o timeout já a falhou, ou houve reentrega), para não mandar uma mensagem legítima
+     * à DLQ por transição inválida.
      */
     @Transactional
     public void processarReservaFalhou(TransferReservationFailed event) {
@@ -114,11 +105,8 @@ public class SagaOrchestratorService {
     }
 
     /*
-     * Cenário 1 de compensação: antifraude rejeitou a transferência. A saga já tinha reservado saldo
-     * mas ainda não confirmou débito nenhum, então a única coisa a desfazer é a reserva. Vai para
-     * ANTIFRAUD_REJECTED (não direto para FAILED) porque o dinheiro só volta de fato quando o
-     * account-service confirmar a liberação via ReservationReleased — a saga permanece observável
-     * nesse estado intermediário até lá.
+     * Compensação 1: antifraude rejeitou. Só a reserva precisa ser desfeita; a saga fica em ANTIFRAUD_REJECTED até
+     * o account-service confirmar a liberação (ReservationReleased).
      */
     @Transactional
     public void processarAntifraudeRejeitada(AntiFraudRejected event) {
@@ -128,11 +116,8 @@ public class SagaOrchestratorService {
     }
 
     /*
-     * Cenário 2 de compensação: o débito na origem já foi confirmado (saga em DEBITED), mas o crédito
-     * no destino falhou (conta bloqueada/fechada). Diferente da rejeição por antifraude, aqui não há
-     * transição imediata — a saga só vira FAILED quando o account-service confirmar a reversão do
-     * débito via DebitReversed. O motivo é registrado já agora para ficar visível enquanto a
-     * compensação ainda está em voo.
+     * Compensação 2: o débito já foi confirmado e o crédito falhou. A saga só vira FAILED quando o account-service
+     * confirmar a reversão (DebitReversed); o motivo é registrado já agora para ficar visível durante a compensação.
      */
     @Transactional
     public void processarCreditoFalhou(CreditFailed event) {
@@ -151,18 +136,15 @@ public class SagaOrchestratorService {
     }
 
     /*
-     * Cenário 3: o SagaTimeoutScheduler chama este método para sagas travadas há mais de 2 minutos
-     * em um estado não-terminal. A compensação depende de quanto a saga avançou antes de travar e
-     * reaproveita os mesmos comandos dos cenários 1 e 2, só que disparados por timeout em vez de por
-     * um evento explícito de rejeição/falha.
+     * Chamado pelo SagaTimeoutScheduler para sagas travadas em estado não-terminal. A compensação depende de quanto
+     * a saga avançou e reaproveita os comandos das compensações 1 e 2.
      */
     @Transactional
     public void processarTimeout(UUID transferId) {
         SagaInstance saga = buscarSaga(transferId);
         switch (saga.getStatus()) {
             case STARTED -> {
-                // Nenhum dinheiro chegou a ser reservado (o account-service nunca processou o
-                // TransferRequested): não há o que compensar, só falhar a saga.
+                // Nada foi reservado: não há o que compensar.
                 saga.registrarMotivoFalha(MOTIVO_TIMEOUT);
                 falharSaga(saga);
             }
@@ -170,9 +152,7 @@ public class SagaOrchestratorService {
                     compensar(saga, MOTIVO_TIMEOUT, outboxPublisher::liberacaoDeReservaSolicitada);
             case DEBITED -> compensar(saga, MOTIVO_TIMEOUT, outboxPublisher::reversaoDeDebitoSolicitada);
             default -> {
-                // CREDITED é transitório (a mesma transação que credita já completa a saga em
-                // seguida) e COMPLETED/FAILED são terminais — o scheduler não deveria chamar este
-                // método para eles, mas se chamar, não há ação de compensação a tomar.
+                // CREDITED é transitório e COMPLETED/FAILED são terminais: nada a compensar.
             }
         }
     }

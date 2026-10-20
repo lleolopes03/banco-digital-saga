@@ -43,13 +43,9 @@ public class OutboxRecordFactory {
         ProducerRecord<String, String> record = new ProducerRecord<>(resolverTopico(event.getEventType()), null,
                 event.getAggregateId().toString(), event.getPayload());
         record.headers().add(new RecordHeader(EVENT_TYPE_HEADER, bytes(event.getEventType())));
-        // eventId é o id do próprio OutboxEvent (um UUID único gerado na criação do registro),
-        // propagado como header para que os consumers o usem como chave de idempotência.
+        // eventId (id do OutboxEvent) é a chave de idempotência dos consumers.
         record.headers().add(new RecordHeader(EVENT_ID_HEADER, bytes(event.getId().toString())));
-        // traceparent (W3C) já foi capturado quando o OutboxEvent foi criado (ver
-        // SagaObservability.traceparentAtual) — aqui só copiamos o valor armazenado para o header,
-        // sem tentar injetar Context.current() nesta thread de scheduling, que não tem nenhuma
-        // relação com o trace original da saga.
+        // O traceparent foi capturado na criação do OutboxEvent; aqui só é copiado para o header.
         sagaObservability.injetarHeader(record, event.getTraceContext());
         return record;
     }

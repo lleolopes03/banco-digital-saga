@@ -19,14 +19,9 @@ import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 /**
- * Tudo o que a saga publica para o resto do sistema, com um método por comando/evento. Cada um grava
- * um OutboxEvent PENDING na transação corrente do chamador (nenhum código de negócio fala direto com o
- * Kafka); o OutboxPublisherScheduler publica depois.
- *
- * O tipo do evento é o nome simples da classe do payload (record em {@code domain.event}), então não
- * há string de tipo escrita à mão para divergir da classe. O traceparent do trace ATIVO neste momento
- * (o span HTTP de iniciarTransferencia, ou o do consumer que disparou o método de negócio) é gravado
- * junto, para o scheduler propagar o mesmo trace ao próximo hop via Kafka.
+ * Tudo o que a saga publica para o resto do sistema, um método por comando/evento. Grava um OutboxEvent
+ * PENDING na transação do chamador (o OutboxPublisherScheduler publica depois). O eventType é o nome
+ * simples da classe do payload; o traceparent ativo é gravado junto para propagar o trace ao próximo hop.
  */
 @Component
 public class SagaOutboxPublisher {

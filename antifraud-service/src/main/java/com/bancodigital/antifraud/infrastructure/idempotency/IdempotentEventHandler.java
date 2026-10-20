@@ -10,23 +10,18 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-/*
- * Wrapper reutilizável de idempotência para consumers Kafka: Kafka garante at-least-once, então
- * qualquer consumer pode receber o mesmo evento mais de uma vez (redelivery após rebalance,
- * timeout de commit, etc).
+/**
+ * Garante que cada evento Kafka seja processado uma única vez (a entrega é at-least-once).
+ * Redis é a checagem rápida (SETNX, TTL 24h); a tabela processed_events é a fonte de verdade quando
+ * o Redis é limpo.
  *
- * Redis é a checagem rápida (SETNX com TTL de 24h — bem acima do timeout de saga de 2 minutos,
- * então nenhum evento legítimo chegaria depois disso). Postgres (processed_events) é a fonte de
- * verdade: se o Redis for limpo/reiniciado, a checagem cai para o Postgres antes de reprocessar,
- * então a garantia de idempotência não depende do Redis estar sempre disponível.
- *
- * A chave Redis é namespaced por serviço (spring.application.name), não só por eventId: alguns
- * tópicos (ex.: transfer.reserved) têm fan-out para mais de um consumer group — o mesmo eventId
- * chega tanto ao transfer-service quanto ao antifraud-service, como DUAS entregas legitimamente
- * independentes (cada consumer group recebe sua própria cópia). Sem o namespace por serviço, o
- * primeiro serviço a processar "roubaria" a chave global e o outro trataria sua própria primeira
- * entrega, legítima, como se fosse duplicata. O Postgres já não tem esse problema (cada serviço
- * tem seu próprio banco), só o Redis compartilhado precisa dessa distinção.
+ * <ul>
+ *   <li>A chave do Redis inclui o nome do serviço: num tópico com fan-out (ex.: transfer.reserved)
+ *       o mesmo eventId chega a mais de um serviço, e cada entrega é legítima.</li>
+ *   <li>Não há transação externa em volta do processamento: os métodos de negócio abrem a própria
+ *       transação e fazem retry, e uma transação externa já marcada rollback-only quebraria o retry.
+ *       Custo: uma janela mínima entre o commit do efeito e o da linha em processed_events.</li>
+ * </ul>
  */
 @Component
 public class IdempotentEventHandler {

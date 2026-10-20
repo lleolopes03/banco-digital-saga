@@ -7,16 +7,10 @@ import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBr
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 
-/*
- * Broker STOMP simples (in-memory, não um broker externo como RabbitMQ) — suficiente aqui porque
- * cada mensagem é só um broadcast best-effort do progresso da saga, não algo que precise
- * sobreviver a um restart do transfer-service. O cliente Angular se conecta em /ws e assina
- * /topic/transfers/{transferId} para acompanhar uma saga específica.
- *
- * setAllowedOriginPatterns("*") porque este serviço não tem CORS configurado em lugar nenhum
- * (mesma convenção do resto do projeto — o frontend fala com os serviços via proxy do
- * `ng serve`, não direto), e um handshake de WebSocket cross-origin sem essa configuração é
- * rejeitado pelo Spring por padrão.
+/**
+ * Broker STOMP em memória: o progresso da saga é broadcast best-effort e não precisa sobreviver a um restart.
+ * Os clientes assinam {@code /topic/transfers/{transferId}}. {@code setAllowedOriginPatterns("*")} porque o
+ * serviço não configura CORS (o frontend usa proxy) e o Spring rejeita handshake cross-origin por padrão.
  */
 @Configuration
 @EnableWebSocketMessageBroker

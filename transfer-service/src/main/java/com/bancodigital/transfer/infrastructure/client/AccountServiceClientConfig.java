@@ -31,15 +31,8 @@ public class AccountServiceClientConfig {
     }
 
     /*
-     * account-service exige JWT em /api/accounts/{id}/balance (desde a fatia de autenticação).
-     * Sem repassar o token de quem está criando a transferência, essa chamada sempre voltava
-     * 401 e o circuit breaker caía no fallback em 100% dos casos — a pré-checagem de saldo
-     * ficava desligada sem ninguém perceber. A chamada acontece na própria thread da requisição
-     * HTTP de POST /api/transfers (o aspecto do Resilience4j é síncrono), então o header da
-     * requisição corrente está disponível. O token é do próprio dono da conta de origem — o
-     * controller já validou isso antes —, então o account-service autoriza a consulta normalmente.
-     * Fora de uma requisição HTTP (nenhum caso hoje) o header simplesmente não é enviado e o
-     * fallback segue valendo.
+     * O account-service exige JWT no saldo: repassa o Authorization da requisição corrente (a chamada é síncrona,
+     * na thread do POST /api/transfers). Fora de uma requisição o header não é enviado e vale o fallback.
      */
     private static ClientHttpRequestInterceptor repassarAuthorizationDaRequisicaoAtual() {
         return (request, body, execution) -> {

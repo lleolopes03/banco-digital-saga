@@ -63,11 +63,7 @@ public class AccountService {
         return AccountResponse.from(saved);
     }
 
-    /*
-     * Cache-aside: a consulta de saldo é a leitura mais frequente do sistema, então evita bater no
-     * Postgres a cada chamada. Em caso de miss (ou de o cache estar fora do ar) consulta o banco e
-     * grava no cache antes de retornar.
-     */
+    /** Cache-aside: a leitura mais frequente do sistema só vai ao Postgres em caso de miss (ou cache fora do ar). */
     @Transactional(readOnly = true)
     public BalanceResponse consultarSaldo(UUID accountId) {
         return balanceCache.buscar(accountId)
@@ -88,14 +84,10 @@ public class AccountService {
     }
 
     /*
-     * Concorrência por lock otimista (@Version em Account) + retry, não lock pessimista: depósitos
-     * são operações curtas e o conflito é raro; um SELECT ... FOR UPDATE serializaria até escritas
-     * em contas diferentes e derrubaria o throughput sem necessidade.
-     *
-     * Saldo, lançamento no extrato e evento de saída (Outbox) são gravados na mesma transação
-     * programática (TransactionTemplate): @Retryable e @Transactional no mesmo método dependem da
-     * ordem de composição dos proxies AOP, que não é garantida. O cache só é invalidado depois do
-     * commit — invalidar antes deixaria uma leitura concorrente repopular o cache com o saldo antigo.
+     * Lock otimista (@Version) com retry, não pessimista: o conflito é raro e SELECT ... FOR UPDATE serializaria
+     * escritas em contas diferentes. Saldo, extrato e evento do Outbox saem na mesma transação programática
+     * (@Retryable e @Transactional no mesmo método dependem da ordem dos proxies AOP); o cache só é invalidado
+     * depois do commit, senão uma leitura concorrente o repopularia com o saldo antigo.
      */
     @RetryOnOptimisticLock
     public AccountResponse depositar(UUID accountId, DepositRequest request) {

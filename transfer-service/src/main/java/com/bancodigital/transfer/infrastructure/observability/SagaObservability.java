@@ -17,15 +17,10 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.springframework.stereotype.Component;
 
-/*
- * Propagação de trace através da fronteira assíncrona do Kafka (padrão Outbox) + spans/métricas
- * customizados por etapa da saga. Duplicada por serviço (mesma convenção já usada neste repo
- * para OutboxEvent/ProcessedEvent/IdempotentEventHandler) em vez de extraída para um módulo
- * compartilhado, já que não existe um módulo "common" no projeto.
- *
- * transfer-service é o orquestrador da saga, então esta cópia também concentra os contadores de
- * ciclo de vida (sagas concluídas/falhas, compensações por motivo) — os outros dois serviços não
- * têm essa noção de "saga inteira", só processam uma etapa isolada.
+/**
+ * Propaga o trace através do Kafka (padrão Outbox) e registra spans e métricas por etapa da saga.
+ * Esta cópia, por ser a do orquestrador, também mantém os contadores de ciclo de vida da saga
+ * (concluídas, falhas e compensações por motivo).
  */
 @Component
 public class SagaObservability {
@@ -60,11 +55,9 @@ public class SagaObservability {
         record.headers().add(new RecordHeader(TRACEPARENT_HEADER, traceContext.getBytes(StandardCharsets.UTF_8)));
     }
 
-    /*
-     * Executa a etapa de negócio de um consumer dentro de um span "saga.<etapa>" cujo pai é o
-     * trace extraído do traceparent recebido no header Kafka (ou um trace novo, se o header
-     * vier nulo/ausente — nunca um erro), e registra a duração num Timer
-     * saga_step_duration_seconds{step=<etapa>} para os dashboards de latência por etapa.
+    /**
+     * Executa a etapa dentro de um span {@code saga.<etapa>} filho do traceparent recebido (ou de um
+     * trace novo, se ausente) e registra a duração em {@code saga_step_duration_seconds}.
      */
     public void executarEtapa(String etapa, String traceparentRecebido, Map<String, String> atributos,
                                Runnable acao) {

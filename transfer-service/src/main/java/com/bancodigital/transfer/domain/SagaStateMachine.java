@@ -16,11 +16,8 @@ public class SagaStateMachine {
     private static final Map<SagaStatus, Set<SagaStatus>> TRANSICOES_VALIDAS = new EnumMap<>(SagaStatus.class);
 
     static {
-        // FAILED é alcançável a partir de STARTED, ANTIFRAUD_PENDING e ANTIFRAUD_APPROVED (além
-        // de RESERVED/ANTIFRAUD_REJECTED/DEBITED/CREDITED, já previstos) porque o
-        // SagaTimeoutScheduler pode disparar compensação/falha a partir de qualquer estado
-        // intermediário não-terminal em que a saga fique travada, não só a partir dos estados
-        // que o fluxo feliz normalmente atravessa antes de uma rejeição explícita.
+        // FAILED também é alcançável de estados intermediários: o SagaTimeoutScheduler pode falhar uma saga
+        // travada em qualquer um deles.
         TRANSICOES_VALIDAS.put(SagaStatus.STARTED, EnumSet.of(SagaStatus.RESERVED, SagaStatus.FAILED));
         TRANSICOES_VALIDAS.put(SagaStatus.RESERVED, EnumSet.of(SagaStatus.ANTIFRAUD_PENDING, SagaStatus.FAILED));
         TRANSICOES_VALIDAS.put(SagaStatus.ANTIFRAUD_PENDING,

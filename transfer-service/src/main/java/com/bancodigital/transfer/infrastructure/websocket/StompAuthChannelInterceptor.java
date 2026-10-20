@@ -16,17 +16,10 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
-/*
- * A conexão HTTP de handshake do WebSocket (o GET inicial em /ws) é liberada em permitAll() no
- * SecurityConfig, porque um WebSocket nativo do browser não permite anexar um header
- * Authorization nesse handshake. A autenticação de verdade acontece aqui, no frame STOMP CONNECT
- * — o cliente Angular manda o JWT em connectHeaders (Authorization: Bearer ...), que chega como
- * header STOMP nativo, não como header HTTP.
- *
- * Além de autenticar, este interceptor autoriza cada SUBSCRIBE: só o dono da conta de origem ou
- * de destino da transferência pode assinar /topic/transfers/{transferId}, evitando que qualquer
- * usuário autenticado espie o progresso de uma saga alheia (o GET /api/transfers/{id} REST já
- * tem essa mesma lacuna hoje, mas aqui não repetimos o descuido).
+/**
+ * Autentica o frame STOMP CONNECT (o handshake HTTP do WebSocket é público, pois o navegador não envia
+ * Authorization nele) e autoriza cada SUBSCRIBE: só o dono da conta de origem ou de destino pode
+ * assinar {@code /topic/transfers/{transferId}}.
  */
 @Component
 public class StompAuthChannelInterceptor implements ChannelInterceptor {
@@ -48,12 +41,8 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
-        // MessageHeaderAccessor.getAccessor (não StompHeaderAccessor.wrap) é essencial aqui: ele
-        // recupera o accessor MUTÁVEL já em cache nos headers da mensagem (colocado lá pelo
-        // StompSubProtocolHandler do Spring). Mutar esse accessor — accessor.setUser(...) — reflete
-        // na mensagem que segue adiante no channel. wrap() cria um accessor novo e desconectado;
-        // setUser() nele some no vácuo, e o Principal do CONNECT nunca chega ao SUBSCRIBE seguinte
-        // na mesma sessão (foi assim que essa autorização ficou quebrada na primeira versão).
+        // getAccessor devolve o accessor mutável da mensagem; wrap() criaria outro e o Principal definido
+        // no CONNECT se perderia antes do SUBSCRIBE.
         StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
 
         if (StompCommand.CONNECT.equals(accessor.getCommand())) {

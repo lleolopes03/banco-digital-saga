@@ -12,22 +12,10 @@ import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.RetryListener;
 import org.springframework.util.backoff.FixedBackOff;
 
-/*
- * Sem isso, uma mensagem que falha de forma permanente (payload corrompido, ou uma regra de
- * negócio que nunca vai passar) ficaria retentando pra sempre na mesma posição da partição —
- * Kafka processa em ordem dentro de uma partição, então nenhuma mensagem publicada depois dela
- * no mesmo tópico seria processada enquanto isso não se resolvesse. O DeadLetterPublishingRecoverer
- * desvia a mensagem, após esgotar as tentativas, para o tópico "<topico-original>-dlt" (sufixo
- * padrão desta versão do Spring Kafka), preservando o motivo da falha nos headers, e o consumer
- * segue processando as próximas normalmente.
- *
- * Mesma configuração usada em account-service/transfer-service/antifraud-service — duplicada aqui
- * porque cada serviço é um deploy independente sem biblioteca compartilhada (mesma convenção já
- * usada para OutboxEvent/ProcessedEvent/SagaObservability).
- *
- * O Spring Boot injeta automaticamente qualquer bean CommonErrorHandler único no
- * ConcurrentKafkaListenerContainerFactory autoconfigurado — aplica-se a todos os @KafkaListener
- * deste serviço, sem precisar configurar cada consumer individualmente.
+/**
+ * Impede que uma mensagem com falha permanente trave a partição: depois de 1 tentativa + 2 retries
+ * (1 s entre elas, bem abaixo do timeout de 2 min da saga) ela vai para o tópico "{@code <original>-dlt}".
+ * O Spring Boot aplica este handler a todos os {@code @KafkaListener} do serviço.
  */
 @Configuration(proxyBeanMethods = false)
 public class KafkaErrorHandlingConfig {
@@ -36,14 +24,9 @@ public class KafkaErrorHandlingConfig {
 
     @Bean
     DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<String, String> kafkaTemplate) {
-        // Partição -1: quem escolhe é o producer (pela chave). O padrão do recoverer reusa o número da
-        // partição de origem, que não existe no -dlt (criado sob demanda com 1 partição) quando o
-        // tópico original tem várias.
+        // Partição -1: o producer escolhe; a de origem pode não existir no -dlt.
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
                 (record, ex) -> new TopicPartition(record.topic() + "-dlt", -1));
-        // 1 tentativa inicial + 2 retries, 1s entre elas: rápido o suficiente para não competir
-        // com o timeout de 2 minutos do SagaTimeoutScheduler (transfer-service), que é a rede de
-        // segurança maior para sagas travadas.
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1_000L, 2));
         errorHandler.setRetryListeners(new LoggingRetryListener());
         return errorHandler;

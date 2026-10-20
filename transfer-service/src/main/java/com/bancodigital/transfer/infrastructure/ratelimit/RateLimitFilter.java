@@ -23,18 +23,11 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-/*
- * Camada de rate limiting de infraestrutura, complementar (não substituta) ao velocity check de
- * negócio que já existe no antifraud-service: este filtro protege a API contra volume bruto de
- * chamadas (ex.: um cliente com bug em loop, ou um ataque simples de força bruta), sem nenhuma
- * noção de regra de fraude — quem decide se um PADRÃO de transferências é suspeito continua
- * sendo o antifraud-service.
- *
- * Contador de janela fixa via INCR + EXPIRE no Redis (não um token bucket "de verdade" com
- * refill suave): simples, O(1), e suficiente para o objetivo aqui. Como INCR e EXPIRE não são
- * atômicos entre si, existe uma janela estreita (só no primeiro request de uma chave nova) onde
- * um crash do processo deixaria a chave sem TTL — risco aceito em troca de não introduzir
- * Redisson só para isso.
+/**
+ * Rate limit de infraestrutura contra volume bruto de chamadas, complementar ao velocity check de negócio
+ * do antifraud-service. Janela fixa por chave (INCR + EXPIRE no Redis): simples e O(1). INCR e EXPIRE não
+ * são atômicos, então um crash logo após o primeiro INCR deixaria a chave sem TTL: risco aceito para não
+ * depender de Redisson.
  */
 @Component
 public class RateLimitFilter extends OncePerRequestFilter {
@@ -42,8 +35,6 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(RateLimitFilter.class);
     private static final String RATE_LIMIT_KEY_PREFIX = "ratelimit:transfer:";
     private static final String TRANSFERS_PATH = "/api/transfers";
-    // Instância própria em vez de injetar um ObjectMapper do Spring, seguindo o mesmo padrão já
-    // usado em SagaOrchestratorService/AccountService para serialização pontual de payloads.
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final StringRedisTemplate redisTemplate;

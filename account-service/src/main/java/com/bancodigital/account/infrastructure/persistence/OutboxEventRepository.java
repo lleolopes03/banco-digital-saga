@@ -16,14 +16,9 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
     List<OutboxEvent> findByStatusOrderByCreatedAtAsc(OutboxEventStatus status, Pageable pageable);
 
     /**
-     * Seleciona e TRAVA (na transação corrente) os próximos eventos a publicar, de forma segura
-     * para várias instâncias do serviço rodando o poller ao mesmo tempo:
-     *  - FOR UPDATE SKIP LOCKED: cada instância pega linhas que nenhuma outra tem travadas, sem
-     *    esperar nem publicar o mesmo evento duas vezes.
-     *  - NOT EXISTS: só devolve o evento mais antigo ainda PENDING de cada agregado (transferId).
-     *    Uma linha travada por outra instância continua PENDING até o commit dela, então os
-     *    eventos seguintes do mesmo agregado ficam de fora e a ordem por saga é preservada, também
-     *    quando um envio falha (o evento fica PENDING e bloqueia os posteriores até ser reenviado).
+     * Seleciona e trava (na transação corrente) os próximos eventos a publicar, de forma segura para várias
+     * instâncias: {@code FOR UPDATE SKIP LOCKED} impede que duas peguem a mesma linha, e o {@code NOT EXISTS}
+     * devolve só o evento mais antigo ainda PENDING de cada agregado, preservando a ordem por saga.
      */
     @Query(value = "SELECT o.* FROM outbox_events o WHERE o.status = 'PENDING' "
             + "AND NOT EXISTS (SELECT 1 FROM outbox_events anterior "

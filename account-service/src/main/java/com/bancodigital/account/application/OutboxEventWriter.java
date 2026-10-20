@@ -10,16 +10,9 @@ import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 /**
- * Grava um evento de saída no Outbox, na transação corrente do chamador. Nenhum código de negócio
- * publica direto no Kafka: o evento vira um OutboxEvent PENDING na mesma transação que altera o
- * estado, e o OutboxPublisherScheduler o publica depois, de forma assíncrona.
- *
- * O tipo do evento é o nome simples da classe do payload (record em {@code domain.event}), então
- * não existe string de tipo escrita à mão para divergir da classe.
- *
- * O traceparent do trace ATIVO neste momento (o span do consumer que disparou o método de
- * negócio, ou o span HTTP) é gravado junto, permitindo ao scheduler — numa thread sem relação
- * com esta chamada — propagar o mesmo trace para o próximo hop via Kafka.
+ * Grava um evento de saída no Outbox, na transação do chamador (o OutboxPublisherScheduler publica depois).
+ * O eventType é o nome simples da classe do payload; o traceparent ativo é gravado junto para o scheduler
+ * propagar o mesmo trace ao próximo hop.
  */
 @Component
 public class OutboxEventWriter {

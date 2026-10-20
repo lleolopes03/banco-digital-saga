@@ -100,10 +100,8 @@ public class Account {
     }
 
     /**
-     * Reserva um valor para uma transferência: tira o valor de balance e coloca em
-     * reservedBalance ("saldo preso", ainda não é débito definitivo). Retorna false em vez de
-     * lançar exceção quando o saldo é insuficiente, porque essa é uma recusa de negócio normal
-     * (vira um evento TransferReservationFailed), não um erro de programação.
+     * Move o valor de balance para reservedBalance. Devolve false (não lança) se o saldo não basta: é uma
+     * recusa de negócio normal, não um erro de programação.
      */
     public boolean reservar(BigDecimal valor) {
         if (balance.compareTo(valor) < 0) {
@@ -114,10 +112,7 @@ public class Account {
         return true;
     }
 
-    /**
-     * Confirma o débito de um valor já reservado: apenas remove de reservedBalance, já que
-     * balance já foi decrementado no momento da reserva.
-     */
+    /** Confirma o débito de um valor já reservado (balance já foi decrementado na reserva). */
     public void confirmarDebito(BigDecimal valor) {
         if (reservedBalance.compareTo(valor) < 0) {
             throw new IllegalStateException(
@@ -126,11 +121,7 @@ public class Account {
         this.reservedBalance = this.reservedBalance.subtract(valor);
     }
 
-    /**
-     * Desfaz uma reserva ainda não confirmada (compensação dos cenários de rejeição por
-     * antifraude e de timeout pré-débito): devolve o valor de reservedBalance para balance, o
-     * inverso exato de {@link #reservar(BigDecimal)}.
-     */
+    /** Desfaz uma reserva ainda não confirmada; é o inverso exato de {@link #reservar(BigDecimal)}. */
     public void liberarReserva(BigDecimal valor) {
         if (reservedBalance.compareTo(valor) < 0) {
             throw new IllegalStateException(

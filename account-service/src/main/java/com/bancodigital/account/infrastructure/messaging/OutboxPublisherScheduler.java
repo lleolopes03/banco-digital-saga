@@ -40,10 +40,9 @@ public class OutboxPublisherScheduler {
         this.tamanhoLote = tamanhoLote;
     }
 
-    /*
-     * Cada poll drena a fila: enquanto o lote vier cheio e algo tiver sido publicado, lê o próximo
-     * lote na hora, sem esperar o intervalo. Cada lote é uma transação curta (em vez de uma única
-     * transação para todo o poll). O intervalo é só o piso de latência quando a fila está vazia.
+    /**
+     * Drena a fila: enquanto o lote vier cheio e algo tiver sido publicado, lê o próximo na hora. O
+     * intervalo é só o piso de latência com a fila vazia. Cada lote é uma transação curta.
      */
     @Scheduled(fixedDelayString = "${outbox.poll-interval:PT0.1S}")
     public void publishPendingEvents() {
@@ -56,15 +55,10 @@ public class OutboxPublisherScheduler {
     }
 
     /*
-     * Envia o lote em pipeline: dispara todos os send() e só depois aguarda as confirmações, em
-     * vez de um .get() por evento (que serializava um round-trip ao broker por evento).
-     *
-     * A seleção (reivindicarPendentes) trava as linhas com FOR UPDATE SKIP LOCKED e devolve no
-     * máximo um evento por agregado, o mais antigo ainda PENDING. Assim várias instâncias podem
-     * rodar este poller ao mesmo tempo sem publicar o mesmo evento nem inverter a ordem de uma
-     * saga; e um evento que falha fica PENDING e bloqueia os seguintes do mesmo agregado até ser
-     * reenviado. Efeito colateral: dois eventos do mesmo agregado nunca saem no mesmo lote (o
-     * segundo sai no lote seguinte, que o dreno em loop já busca na hora).
+     * Envia o lote em pipeline (todos os send() antes de aguardar as confirmações). reivindicarPendentes
+     * trava as linhas (SKIP LOCKED) e traz só o evento mais antigo de cada agregado: várias instâncias
+     * não duplicam eventos nem invertem a ordem de uma saga, e um envio que falha bloqueia os seguintes
+     * da mesma saga até ser reenviado.
      */
     private ResultadoLote publicarLote() {
         List<OutboxEvent> pendentes = outboxEventRepository.reivindicarPendentes(tamanhoLote);

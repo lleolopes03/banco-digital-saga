@@ -12,22 +12,11 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/*
- * Retenção das tabelas que só crescem: outbox_events e processed_events. Sem isto, cada saga
- * deixa linhas para sempre (em ~1 tx/s sustentado são centenas de milhares de linhas por dia por
- * tabela), o que degrada índices, backup e vacuum.
- *
- * Regras de segurança:
- *  - outbox_events: só apaga as PUBLISHED mais antigas que `retention.outbox`. Eventos PENDING
- *    NUNCA são tocados, por mais antigos que sejam — apagá-los seria perder um evento ainda não
- *    publicado.
- *  - processed_events: é a fonte de verdade da idempotência quando o Redis (TTL de 24h) é
- *    limpo, então a retenção precisa cobrir a janela em que o Kafka ainda pode reentregar uma
- *    mensagem (retenção padrão do tópico: 7 dias). Por isso o padrão aqui é 14 dias, com folga.
- *
- * Apaga em lotes, cada um na sua transação curta, para não segurar lock nem inflar o WAL numa
- * única operação gigante. Várias instâncias rodando ao mesmo tempo são inofensivas (DELETE
- * idempotente). Duplicado por serviço, mesma convenção de OutboxEvent/ProcessedEvent.
+/**
+ * Apaga em lotes, em transações curtas, o que só cresce: eventos de outbox já publicados
+ * ({@code retention.outbox}, padrão 7 dias; PENDING nunca é tocado) e processed_events
+ * ({@code retention.processed-events}, padrão 14 dias, acima da retenção de 7 dias do Kafka para a
+ * idempotência cobrir qualquer reentrega). Várias instâncias em paralelo são inofensivas: o DELETE é idempotente.
  */
 @Component
 public class RetentionCleanupScheduler {

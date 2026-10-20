@@ -28,17 +28,13 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Os passos da saga de transferência do lado das contas: reservar, debitar, creditar e as duas
- * compensações (liberar reserva, reverter débito). Cada passo é uma transação própria que altera a
- * conta, registra o lançamento no extrato (quando há) e grava o evento de resposta no Outbox.
+ * Os passos da saga do lado das contas: reservar, debitar, creditar e as duas compensações. Cada passo é uma
+ * transação que altera a conta, registra o extrato (quando há) e grava o evento de resposta no Outbox.
  *
- * Concorrência por lock otimista (@Version) com retry ({@link RetryOnOptimisticLock}); se as
- * tentativas se esgotam, o @Recover lança {@link SagaStepConflictException} e o consumer devolve a
- * mensagem para nova entrega. A transação é programática (TransactionTemplate) porque @Retryable e
- * @Transactional no mesmo método dependem da ordem em que os dois proxies AOP são compostos.
- *
- * O cache de saldo é invalidado DEPOIS do commit, nunca dentro da transação: invalidar antes abriria
- * uma janela em que uma leitura concorrente repopularia o cache com o saldo antigo pelos 30s do TTL.
+ * Concorrência por lock otimista com retry ({@link RetryOnOptimisticLock}); esgotadas as tentativas, o
+ * {@code @Recover} lança {@link SagaStepConflictException} e a mensagem é reentregue. A transação é programática
+ * porque @Retryable e @Transactional no mesmo método dependem da ordem dos proxies AOP. O cache de saldo só é
+ * invalidado depois do commit: antes, uma leitura concorrente repopularia o cache com o saldo antigo.
  */
 @Service
 public class AccountSagaService {
@@ -61,12 +57,7 @@ public class AccountSagaService {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    /*
-     * Primeiro passo da saga (antes de qualquer checagem de fraude): se não há saldo, não faz
-     * sentido gastar uma consulta de antifraude com uma transferência que já não pode acontecer.
-     * A falta de saldo é uma recusa de negócio normal (vira TransferReservationFailed), não uma
-     * exceção.
-     */
+    /** Primeiro passo da saga. Saldo insuficiente é uma recusa de negócio (TransferReservationFailed), não uma exceção. */
     @RetryOnOptimisticLock
     public void reservarSaldo(TransferRequested event) {
         executarPasso(event.accountOrigemId(), () -> {
@@ -104,12 +95,7 @@ public class AccountSagaService {
         throw new SagaStepConflictException("confirmarDebito", event.accountOrigemId());
     }
 
-    /*
-     * Creditar o destino é, em termos de saldo, a mesma operação que um depósito
-     * (Account.deposit()); o que muda é o lançamento no extrato (TRANSFER_IN) e o evento publicado.
-     * Conta destino bloqueada/fechada é uma recusa de negócio normal (CreditFailed, que dispara a
-     * reversão do débito já confirmado na origem), não uma exceção de programação.
-     */
+    /** Conta destino bloqueada/fechada é uma recusa de negócio (CreditFailed), que dispara a reversão do débito. */
     @RetryOnOptimisticLock
     public void creditarPorTransferencia(CreditRequested event) {
         executarPasso(event.accountDestinoId(), () -> {
@@ -134,11 +120,7 @@ public class AccountSagaService {
         throw new SagaStepConflictException("creditarPorTransferencia", event.accountDestinoId());
     }
 
-    /*
-     * Compensação 1 (rejeição por antifraude ou timeout antes do débito): devolve para o saldo o
-     * valor que ainda estava só reservado. A reserva original não gera lançamento no extrato, então
-     * é esta liberação que deixa o rastro — toda compensação precisa ser auditável.
-     */
+    /** Compensação 1: devolve ao saldo o valor só reservado. É este passo que deixa o rastro no extrato. */
     @RetryOnOptimisticLock
     public void liberarReserva(ReleaseReservedAmount event) {
         executarPasso(event.accountOrigemId(), () -> {
@@ -159,10 +141,7 @@ public class AccountSagaService {
         throw new SagaStepConflictException("liberarReserva", event.accountOrigemId());
     }
 
-    /*
-     * Compensação 2: o débito na origem já tinha sido confirmado quando o crédito no destino falhou,
-     * então devolver o dinheiro é literalmente a mesma operação que um depósito (Account.deposit()).
-     */
+    /** Compensação 2: o débito já estava confirmado, então devolver o dinheiro equivale a um depósito. */
     @RetryOnOptimisticLock
     public void reverterDebito(ReverseDebitRequested event) {
         executarPasso(event.accountOrigemId(), () -> {
@@ -183,7 +162,7 @@ public class AccountSagaService {
         throw new SagaStepConflictException("reverterDebito", event.accountOrigemId());
     }
 
-    /** Roda o passo numa transação e, só depois do commit, invalida o cache de saldo da conta afetada. */
+    /** Roda o passo numa transação e só então invalida o cache de saldo da conta afetada. */
     private void executarPasso(UUID contaAfetada, Runnable passo) {
         transactionTemplate.executeWithoutResult(status -> passo.run());
         balanceCache.invalidar(contaAfetada);
