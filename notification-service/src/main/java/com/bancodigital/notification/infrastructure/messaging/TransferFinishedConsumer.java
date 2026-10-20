@@ -5,8 +5,6 @@ import com.bancodigital.notification.domain.event.TransferCompleted;
 import com.bancodigital.notification.domain.event.TransferFailed;
 import com.bancodigital.notification.infrastructure.idempotency.IdempotentEventHandler;
 import com.bancodigital.notification.infrastructure.observability.SagaObservability;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -15,8 +13,6 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TransferFinishedConsumer {
-
-    private static final ObjectMapper PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final NotificationService notificationService;
     private final IdempotentEventHandler idempotentEventHandler;
@@ -38,24 +34,20 @@ public class TransferFinishedConsumer {
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
                          @Header(value = "traceparent", required = false) String traceparent) {
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            try {
-                switch (eventType) {
-                    case "TransferCompleted" -> {
-                        TransferCompleted event = PAYLOAD_MAPPER.readValue(payload, TransferCompleted.class);
-                        sagaObservability.executarEtapa("notify", traceparent,
-                                Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                                () -> notificationService.registrarTransferConcluida(event));
-                    }
-                    case "TransferFailed" -> {
-                        TransferFailed event = PAYLOAD_MAPPER.readValue(payload, TransferFailed.class);
-                        sagaObservability.executarEtapa("notify", traceparent,
-                                Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                                () -> notificationService.registrarTransferFalhou(event));
-                    }
-                    default -> throw new IllegalStateException("eventType desconhecido em transfer.finished: " + eventType);
+            switch (eventType) {
+                case "TransferCompleted" -> {
+                    TransferCompleted event = EventPayloadReader.ler(payload, TransferCompleted.class);
+                    sagaObservability.executarEtapa("notify", traceparent,
+                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                            () -> notificationService.registrarTransferConcluida(event));
                 }
-            } catch (Exception e) {
-                throw new IllegalStateException("Falha ao processar evento do tópico transfer.finished: " + payload, e);
+                case "TransferFailed" -> {
+                    TransferFailed event = EventPayloadReader.ler(payload, TransferFailed.class);
+                    sagaObservability.executarEtapa("notify", traceparent,
+                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                            () -> notificationService.registrarTransferFalhou(event));
+                }
+                default -> throw new IllegalStateException("eventType desconhecido em transfer.finished: " + eventType);
             }
         });
     }
