@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.kafka.KafkaContainer;
 
 /*
@@ -50,6 +51,12 @@ class OutboxPublisherSchedulerTest extends AbstractIntegrationTest {
 
     @Autowired
     private SagaObservability sagaObservability;
+
+    @Autowired
+    private KafkaTemplate<String, String> kafkaTemplate;
+
+    @Autowired
+    private TransactionTemplate transactionTemplate;
 
     @Test
     void devePublicarEventoPendenteEMarcarComoPublished() {
@@ -82,13 +89,34 @@ class OutboxPublisherSchedulerTest extends AbstractIntegrationTest {
 
         KafkaTemplate<String, String> kafkaTemplateQuebrado = criarKafkaTemplateApontandoParaBrokerInexistente();
         OutboxPublisherScheduler schedulerComFalha = new OutboxPublisherScheduler(outboxEventRepository, kafkaTemplateQuebrado,
-                sagaObservability);
+                sagaObservability, transactionTemplate, 100);
 
         schedulerComFalha.publishPendingEvents();
 
         OutboxEvent reloaded = outboxEventRepository.findById(event.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(OutboxEventStatus.PENDING);
         assertThat(reloaded.getPublishedAt()).isNull();
+    }
+
+    @Test
+    void deveDrenarVariosLotesNaMesmaExecucaoEmVezDeUmLotePorIntervalo() {
+        // lote de 2 e 5 eventos: sem o dreno em loop seriam necessárias 3 execuções do scheduler
+        OutboxPublisherScheduler schedulerLoteMinimo = new OutboxPublisherScheduler(outboxEventRepository, kafkaTemplate,
+                sagaObservability, transactionTemplate, 2);
+        List<UUID> ids = new java.util.ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            UUID accountId = UUID.randomUUID();
+            String payload = "{\"accountId\":\"" + accountId + "\",\"amount\":" + (10 + i) + ".00}";
+            OutboxEvent event = OutboxEvent.pending(UUID.randomUUID(), "Account", accountId, "DepositCompleted", payload, null);
+            ids.add(outboxEventRepository.saveAndFlush(event).getId());
+        }
+
+        schedulerLoteMinimo.publishPendingEvents();
+
+        for (UUID id : ids) {
+            assertThat(outboxEventRepository.findById(id).orElseThrow().getStatus())
+                    .isEqualTo(OutboxEventStatus.PUBLISHED);
+        }
     }
 
     private KafkaTemplate<String, String> criarKafkaTemplateApontandoParaBrokerInexistente() {
