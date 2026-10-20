@@ -4,8 +4,6 @@ import com.bancodigital.antifraud.application.AntiFraudService;
 import com.bancodigital.antifraud.domain.event.TransferReserved;
 import com.bancodigital.antifraud.infrastructure.idempotency.IdempotentEventHandler;
 import com.bancodigital.antifraud.infrastructure.observability.SagaObservability;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -14,8 +12,6 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TransferReservedConsumer {
-
-    private static final ObjectMapper PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final AntiFraudService antiFraudService;
     private final IdempotentEventHandler idempotentEventHandler;
@@ -42,14 +38,10 @@ public class TransferReservedConsumer {
             return;
         }
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            try {
-                TransferReserved event = PAYLOAD_MAPPER.readValue(payload, TransferReserved.class);
-                sagaObservability.executarEtapa("antifraud_check", traceparent,
-                        Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                        () -> antiFraudService.avaliar(event));
-            } catch (Exception e) {
-                throw new IllegalStateException("Falha ao processar TransferReserved: " + payload, e);
-            }
+            TransferReserved event = EventPayloadReader.ler(payload, TransferReserved.class);
+            sagaObservability.executarEtapa("antifraud_check", traceparent,
+                    Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                    () -> antiFraudService.avaliar(event));
         });
     }
 }
