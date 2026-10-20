@@ -20,9 +20,17 @@ spring:
       # configuração distintas nesta versão do Spring Boot.
       uuid: standard
   kafka:
+    listener:
+      # threads por @KafkaListener; só ajuda se o tópico tiver partições suficientes (ver KafkaTopicsConfig)
+      concurrency: ${KAFKA_LISTENER_CONCURRENCY:3}
     consumer:
       group-id: notification-service
       auto-offset-reset: earliest
+      properties:
+        # tópicos são criados pelo KafkaTopicsConfig (com várias partições), nunca sob demanda pelo consumer
+        allow.auto.create.topics: false
+        # descobre partições novas em 30s (padrão: 5 min) caso o tópico seja ampliado com o serviço no ar
+        metadata.max.age.ms: 30000
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     producer:

@@ -1,6 +1,7 @@
 package com.bancodigital.account.infrastructure.messaging;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -38,7 +39,11 @@ public class KafkaErrorHandlingConfig {
 
     @Bean
     DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<String, String> kafkaTemplate) {
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
+        // Partição -1: quem escolhe é o producer (pela chave). O padrão do recoverer reusa o número da
+        // partição de origem, que não existe no -dlt (criado sob demanda com 1 partição) quando o
+        // tópico original tem várias.
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
+                (record, ex) -> new TopicPartition(record.topic() + "-dlt", -1));
         // 1 tentativa inicial + 2 retries, 1s entre elas: rápido o suficiente para não competir
         // com o timeout de 2 minutos do SagaTimeoutScheduler (transfer-service), que é a rede de
         // segurança maior para sagas travadas.

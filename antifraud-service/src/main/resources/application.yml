@@ -1,15 +1,27 @@
 spring:
   application:
     name: antifraud-service
+  datasource:
+    hikari:
+      # mais de uma thread de consumer por listener + requisições HTTP disputam conexões
+      maximum-pool-size: ${DB_POOL_SIZE:20}
   jpa:
     open-in-view: false
   flyway:
     enabled: true
     locations: classpath:db/migration/antifraud
   kafka:
+    listener:
+      # threads por @KafkaListener; só ajuda se o tópico tiver partições suficientes (ver KafkaTopicsConfig)
+      concurrency: ${KAFKA_LISTENER_CONCURRENCY:3}
     consumer:
       group-id: antifraud-service
       auto-offset-reset: earliest
+      properties:
+        # tópicos são criados pelo KafkaTopicsConfig (com várias partições), nunca sob demanda pelo consumer
+        allow.auto.create.topics: false
+        # descobre partições novas em 30s (padrão: 5 min) caso o tópico seja ampliado com o serviço no ar
+        metadata.max.age.ms: 30000
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     producer:
