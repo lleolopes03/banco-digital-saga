@@ -1,6 +1,7 @@
 package com.bancodigital.transfer.web.controller;
 
-import com.bancodigital.transfer.application.SagaOrchestratorService;
+import com.bancodigital.transfer.application.TransferInitiationService;
+import com.bancodigital.transfer.application.TransferQueryService;
 import com.bancodigital.transfer.infrastructure.security.AuthenticatedUser;
 import com.bancodigital.transfer.web.dto.CreateTransferRequest;
 import com.bancodigital.transfer.web.dto.TransferAcceptedResponse;
@@ -23,10 +24,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/transfers")
 public class TransferController {
 
-    private final SagaOrchestratorService sagaOrchestratorService;
+    private final TransferInitiationService transferInitiationService;
+    private final TransferQueryService transferQueryService;
 
-    public TransferController(SagaOrchestratorService sagaOrchestratorService) {
-        this.sagaOrchestratorService = sagaOrchestratorService;
+    public TransferController(TransferInitiationService transferInitiationService,
+                              TransferQueryService transferQueryService) {
+        this.transferInitiationService = transferInitiationService;
+        this.transferQueryService = transferQueryService;
     }
 
     @PostMapping
@@ -38,13 +42,13 @@ public class TransferController {
             throw new AccessDeniedException(
                     "A conta de origem " + request.accountOrigemId() + " não pertence ao usuário autenticado.");
         }
-        UUID transferId = sagaOrchestratorService.iniciarTransferencia(request.accountOrigemId(),
+        UUID transferId = transferInitiationService.iniciarTransferencia(request.accountOrigemId(),
                 request.accountDestinoId(), request.valor(), idempotencyKey);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(new TransferAcceptedResponse(transferId));
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<TransferResponse> consultarTransferencia(@PathVariable UUID id) {
-        return ResponseEntity.ok(TransferResponse.from(sagaOrchestratorService.consultarSaga(id)));
+        return ResponseEntity.ok(TransferResponse.from(transferQueryService.consultarSaga(id)));
     }
 }

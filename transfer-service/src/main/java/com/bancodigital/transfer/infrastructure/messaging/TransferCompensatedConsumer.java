@@ -5,8 +5,6 @@ import com.bancodigital.transfer.domain.event.DebitReversed;
 import com.bancodigital.transfer.domain.event.ReservationReleased;
 import com.bancodigital.transfer.infrastructure.idempotency.IdempotentEventHandler;
 import com.bancodigital.transfer.infrastructure.observability.SagaObservability;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -15,8 +13,6 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TransferCompensatedConsumer {
-
-    private static final ObjectMapper PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
@@ -36,26 +32,22 @@ public class TransferCompensatedConsumer {
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
                          @Header(value = "traceparent", required = false) String traceparent) {
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            try {
-                switch (eventType) {
-                    case "ReservationReleased" -> {
-                        ReservationReleased event = PAYLOAD_MAPPER.readValue(payload, ReservationReleased.class);
-                        sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
-                                Map.of("transferId", event.transferId().toString()),
-                                () -> sagaOrchestratorService.processarReservaLiberada(event));
-                    }
-                    case "DebitReversed" -> {
-                        DebitReversed event = PAYLOAD_MAPPER.readValue(payload, DebitReversed.class);
-                        sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
-                                Map.of("transferId", event.transferId().toString()),
-                                () -> sagaOrchestratorService.processarDebitoRevertido(event));
-                    }
-                    default -> {
-                        // eventType desconhecido: ignora.
-                    }
+            switch (eventType) {
+                case "ReservationReleased" -> {
+                    ReservationReleased event = EventPayloadReader.ler(payload, ReservationReleased.class);
+                    sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
+                            Map.of("transferId", event.transferId().toString()),
+                            () -> sagaOrchestratorService.processarReservaLiberada(event));
                 }
-            } catch (Exception e) {
-                throw new IllegalStateException("Falha ao processar evento de compensação (" + eventType + "): " + payload, e);
+                case "DebitReversed" -> {
+                    DebitReversed event = EventPayloadReader.ler(payload, DebitReversed.class);
+                    sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
+                            Map.of("transferId", event.transferId().toString()),
+                            () -> sagaOrchestratorService.processarDebitoRevertido(event));
+                }
+                default -> {
+                    // eventType desconhecido: ignora.
+                }
             }
         });
     }

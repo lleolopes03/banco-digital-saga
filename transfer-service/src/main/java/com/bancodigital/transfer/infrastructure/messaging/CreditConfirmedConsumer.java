@@ -5,8 +5,6 @@ import com.bancodigital.transfer.domain.event.CreditConfirmed;
 import com.bancodigital.transfer.domain.event.CreditFailed;
 import com.bancodigital.transfer.infrastructure.idempotency.IdempotentEventHandler;
 import com.bancodigital.transfer.infrastructure.observability.SagaObservability;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -15,8 +13,6 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class CreditConfirmedConsumer {
-
-    private static final ObjectMapper PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
@@ -35,26 +31,22 @@ public class CreditConfirmedConsumer {
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
                          @Header(value = "traceparent", required = false) String traceparent) {
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            try {
-                switch (eventType) {
-                    case "CreditConfirmed" -> {
-                        CreditConfirmed event = PAYLOAD_MAPPER.readValue(payload, CreditConfirmed.class);
-                        sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
-                                Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                                () -> sagaOrchestratorService.processarCreditoConfirmado(event));
-                    }
-                    case "CreditFailed" -> {
-                        CreditFailed event = PAYLOAD_MAPPER.readValue(payload, CreditFailed.class);
-                        sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
-                                Map.of("transferId", event.transferId().toString()),
-                                () -> sagaOrchestratorService.processarCreditoFalhou(event));
-                    }
-                    default -> {
-                        // eventType desconhecido: ignora.
-                    }
+            switch (eventType) {
+                case "CreditConfirmed" -> {
+                    CreditConfirmed event = EventPayloadReader.ler(payload, CreditConfirmed.class);
+                    sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
+                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                            () -> sagaOrchestratorService.processarCreditoConfirmado(event));
                 }
-            } catch (Exception e) {
-                throw new IllegalStateException("Falha ao processar evento de crédito (" + eventType + "): " + payload, e);
+                case "CreditFailed" -> {
+                    CreditFailed event = EventPayloadReader.ler(payload, CreditFailed.class);
+                    sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
+                            Map.of("transferId", event.transferId().toString()),
+                            () -> sagaOrchestratorService.processarCreditoFalhou(event));
+                }
+                default -> {
+                    // eventType desconhecido: ignora.
+                }
             }
         });
     }

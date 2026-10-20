@@ -5,8 +5,6 @@ import com.bancodigital.transfer.domain.event.AntiFraudApproved;
 import com.bancodigital.transfer.domain.event.AntiFraudRejected;
 import com.bancodigital.transfer.infrastructure.idempotency.IdempotentEventHandler;
 import com.bancodigital.transfer.infrastructure.observability.SagaObservability;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -15,8 +13,6 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class AntiFraudEventConsumer {
-
-    private static final ObjectMapper PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
@@ -35,26 +31,22 @@ public class AntiFraudEventConsumer {
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
                          @Header(value = "traceparent", required = false) String traceparent) {
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            try {
-                switch (eventType) {
-                    case "AntiFraudApproved" -> {
-                        AntiFraudApproved event = PAYLOAD_MAPPER.readValue(payload, AntiFraudApproved.class);
-                        sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
-                                Map.of("transferId", event.transferId().toString()),
-                                () -> sagaOrchestratorService.processarAntifraudeAprovada(event));
-                    }
-                    case "AntiFraudRejected" -> {
-                        AntiFraudRejected event = PAYLOAD_MAPPER.readValue(payload, AntiFraudRejected.class);
-                        sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
-                                Map.of("transferId", event.transferId().toString()),
-                                () -> sagaOrchestratorService.processarAntifraudeRejeitada(event));
-                    }
-                    default -> {
-                        // eventType desconhecido: ignora.
-                    }
+            switch (eventType) {
+                case "AntiFraudApproved" -> {
+                    AntiFraudApproved event = EventPayloadReader.ler(payload, AntiFraudApproved.class);
+                    sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
+                            Map.of("transferId", event.transferId().toString()),
+                            () -> sagaOrchestratorService.processarAntifraudeAprovada(event));
                 }
-            } catch (Exception e) {
-                throw new IllegalStateException("Falha ao processar evento de antifraude (" + eventType + "): " + payload, e);
+                case "AntiFraudRejected" -> {
+                    AntiFraudRejected event = EventPayloadReader.ler(payload, AntiFraudRejected.class);
+                    sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
+                            Map.of("transferId", event.transferId().toString()),
+                            () -> sagaOrchestratorService.processarAntifraudeRejeitada(event));
+                }
+                default -> {
+                    // eventType desconhecido: ignora.
+                }
             }
         });
     }

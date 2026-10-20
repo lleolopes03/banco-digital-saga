@@ -10,7 +10,7 @@ import org.springframework.web.client.RestClient;
 
 /**
  * Validação síncrona e opcional de saldo, feita antes de abrir uma saga (ver
- * SagaOrchestratorService.iniciarTransferencia). Protegida por circuit breaker: se
+ * TransferInitiationService.iniciarTransferencia). Protegida por circuit breaker: se
  * account-service estiver indisponível, {@link #balanceCheckFallback} deixa a saga seguir sem
  * essa pré-checagem — a validação definitiva continua sendo a reserva assíncrona da saga, que
  * não depende deste cliente.

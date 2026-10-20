@@ -1,17 +1,14 @@
 package com.bancodigital.transfer.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.bancodigital.transfer.domain.InsufficientBalanceException;
 import com.bancodigital.transfer.domain.OutboxEvent;
 import com.bancodigital.transfer.domain.SagaEvent;
 import com.bancodigital.transfer.domain.SagaInstance;
-import com.bancodigital.transfer.domain.SagaInstanceNotFoundException;
 import com.bancodigital.transfer.domain.SagaStateMachine;
 import com.bancodigital.transfer.domain.SagaStatus;
 import com.bancodigital.transfer.domain.event.AntiFraudApproved;
@@ -23,8 +20,6 @@ import com.bancodigital.transfer.domain.event.DebitReversed;
 import com.bancodigital.transfer.domain.event.ReservationReleased;
 import com.bancodigital.transfer.domain.event.TransferReservationFailed;
 import com.bancodigital.transfer.domain.event.TransferReserved;
-import com.bancodigital.transfer.infrastructure.client.AccountServiceClient;
-import com.bancodigital.transfer.infrastructure.client.BalanceResponse;
 import com.bancodigital.transfer.infrastructure.observability.SagaObservability;
 import com.bancodigital.transfer.infrastructure.persistence.OutboxEventRepository;
 import com.bancodigital.transfer.infrastructure.persistence.SagaInstanceRepository;
@@ -50,9 +45,6 @@ class SagaOrchestratorServiceTest {
     private OutboxEventRepository outboxEventRepository;
 
     @Mock
-    private AccountServiceClient accountServiceClient;
-
-    @Mock
     private SagaObservability sagaObservability;
 
     @Mock
@@ -62,11 +54,11 @@ class SagaOrchestratorServiceTest {
 
     @BeforeEach
     void setUp() {
-        // accountServiceClient não é stubado explicitamente: Mockito já retorna Optional.empty()
-        // por padrão, o que reproduz o comportamento de fallback (pular a pré-checagem de saldo)
-        // sem precisar simular o circuito aqui — isso é coberto por TransferServiceCircuitBreakerTest.
-        orchestrator = new SagaOrchestratorService(sagaInstanceRepository, outboxEventRepository, accountServiceClient,
-                sagaObservability, sagaStatusPublisher);
+        // O publisher é o real, sobre o repositório mockado: assim os testes verificam o OutboxEvent
+        // efetivamente gravado (tipo, agregado), não só que um método foi chamado.
+        SagaOutboxPublisher outboxPublisher = new SagaOutboxPublisher(outboxEventRepository, sagaObservability);
+        orchestrator = new SagaOrchestratorService(sagaInstanceRepository, outboxPublisher, sagaObservability,
+                sagaStatusPublisher);
     }
 
     /** Avança a saga por transições reais até o estado desejado, sem reflexão. */
@@ -98,53 +90,6 @@ class SagaOrchestratorServiceTest {
             return saga;
         }
         throw new IllegalArgumentException("Caminho de setup não definido para o estado " + estadoAlvo);
-    }
-
-    @Test
-    void deveIniciarTransferenciaCriandoSagaEPublicandoTransferRequested() {
-        UUID accountOrigemId = UUID.randomUUID();
-        UUID accountDestinoId = UUID.randomUUID();
-
-        UUID transferId = orchestrator.iniciarTransferencia(accountOrigemId, accountDestinoId,
-                new BigDecimal("300.00"), null);
-
-        ArgumentCaptor<SagaInstance> sagaCaptor = ArgumentCaptor.forClass(SagaInstance.class);
-        verify(sagaInstanceRepository).saveAndFlush(sagaCaptor.capture());
-        assertThat(sagaCaptor.getValue().getId()).isEqualTo(transferId);
-        assertThat(sagaCaptor.getValue().getStatus()).isEqualTo(SagaStatus.STARTED);
-
-        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(outboxCaptor.capture());
-        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferRequested");
-        assertThat(outboxCaptor.getValue().getAggregateType()).isEqualTo("Transfer");
-        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(transferId);
-    }
-
-    @Test
-    void deveCriarSagaQuandoConsultaDeSaldoIndicaSaldoSuficiente() {
-        UUID accountOrigemId = UUID.randomUUID();
-        when(accountServiceClient.consultarSaldo(accountOrigemId))
-                .thenReturn(Optional.of(new BalanceResponse(accountOrigemId, new BigDecimal("1000.00"))));
-
-        UUID transferId = orchestrator.iniciarTransferencia(accountOrigemId, UUID.randomUUID(),
-                new BigDecimal("300.00"), null);
-
-        verify(sagaInstanceRepository).saveAndFlush(any());
-        assertThat(transferId).isNotNull();
-    }
-
-    @Test
-    void deveRecusarComSaldoInsuficienteSemCriarSagaQuandoConsultaDeSaldoRespondeuComSucesso() {
-        UUID accountOrigemId = UUID.randomUUID();
-        when(accountServiceClient.consultarSaldo(accountOrigemId))
-                .thenReturn(Optional.of(new BalanceResponse(accountOrigemId, new BigDecimal("10.00"))));
-
-        assertThatThrownBy(() -> orchestrator.iniciarTransferencia(accountOrigemId, UUID.randomUUID(),
-                new BigDecimal("300.00"), null))
-                .isInstanceOf(InsufficientBalanceException.class);
-
-        verify(sagaInstanceRepository, never()).saveAndFlush(any());
-        verify(outboxEventRepository, never()).save(any());
     }
 
     @Test
@@ -209,15 +154,6 @@ class SagaOrchestratorServiceTest {
         verify(outboxEventRepository).save(outboxCaptor.capture());
         assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("TransferCompleted");
         assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(saga.getId());
-    }
-
-    @Test
-    void deveLancarExcecaoAoProcessarEventoDeSagaInexistente() {
-        UUID transferId = UUID.randomUUID();
-        when(sagaInstanceRepository.findById(transferId)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> orchestrator.consultarSaga(transferId))
-                .isInstanceOf(SagaInstanceNotFoundException.class);
     }
 
     @Test
@@ -330,35 +266,6 @@ class SagaOrchestratorServiceTest {
         ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
         verify(outboxEventRepository).save(outboxCaptor.capture());
         assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("ReverseDebitRequested");
-    }
-
-    @Test
-    void deveRetornarSagaExistenteEmVezDeCriarNovaQuandoIdempotencyKeyJaFoiUsada() {
-        SagaInstance sagaExistente = criarSagaNoEstado(SagaStatus.STARTED);
-        when(sagaInstanceRepository.findByIdempotencyKey("chave-123")).thenReturn(Optional.of(sagaExistente));
-
-        UUID transferId = orchestrator.iniciarTransferencia(UUID.randomUUID(), UUID.randomUUID(),
-                new BigDecimal("300.00"), "chave-123");
-
-        assertThat(transferId).isEqualTo(sagaExistente.getId());
-        verify(sagaInstanceRepository, never()).saveAndFlush(any());
-        verify(outboxEventRepository, never()).save(any());
-    }
-
-    @Test
-    void deveCriarSagaComIdempotencyKeyQuandoAindaNaoExiste() {
-        when(sagaInstanceRepository.findByIdempotencyKey("chave-nova")).thenReturn(Optional.empty());
-
-        UUID accountOrigemId = UUID.randomUUID();
-        UUID accountDestinoId = UUID.randomUUID();
-        UUID transferId = orchestrator.iniciarTransferencia(accountOrigemId, accountDestinoId,
-                new BigDecimal("300.00"), "chave-nova");
-
-        ArgumentCaptor<SagaInstance> sagaCaptor = ArgumentCaptor.forClass(SagaInstance.class);
-        verify(sagaInstanceRepository).saveAndFlush(sagaCaptor.capture());
-        assertThat(sagaCaptor.getValue().getId()).isEqualTo(transferId);
-        assertThat(sagaCaptor.getValue().getIdempotencyKey()).isEqualTo("chave-nova");
-        verify(outboxEventRepository).save(any());
     }
 
     @Test
