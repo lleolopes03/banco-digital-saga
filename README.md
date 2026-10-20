@@ -66,6 +66,7 @@ antifraude, mostrando a compensação da saga (estorno) refletida ao vivo no fro
 - [Tracing distribuído da saga (OpenTelemetry)](#tracing-distribuído-da-saga-opentelemetry)
 - [Antifraude](#antifraude)
 - [Notificações (MongoDB)](#notificações-mongodb)
+- [Publicação do Outbox, partições e escala horizontal](#publicação-do-outbox-partições-e-escala-horizontal)
 - [Retenção de dados (Outbox e idempotência)](#retenção-de-dados-outbox-e-idempotência)
 - [CI/CD](#cicd)
 
@@ -503,6 +504,14 @@ com o Jaeger. Métricas usam um caminho totalmente separado (scrape do Prometheu
 ecossistema Prometheus/Grafana. `notification-service` só entrou nesses dois caminhos na fatia
 de notificações (antes era um esqueleto sem código de negócio nenhum para tracear).
 
+**Armazenamento e amostragem**: o Jaeger sobe com armazenamento em disco (Badger, volume
+`jaeger_data`) e retenção de 72h, não mais em memória sem limite — medido em carga, cada trace
+ocupava ~120 KB de RAM e o container passava de 2 GB depois de ~15 mil sagas. O container tem
+`mem_limit: 1g` e o `otel-collector` tem `memory_limiter`, então um backend lento faz o coletor
+recusar spans em vez de crescer até cair. Em desenvolvimento 100% dos traces são amostrados;
+`TRACING_SAMPLING_PROBABILITY` (ex.: `0.1`) reduz isso sem mexer no código. Em produção o ideal é
+um backend gerenciado (Elasticsearch/OpenSearch) e amostragem na borda.
+
 > **Pegadinha do Spring Boot 4.1**: a propriedade `management.otlp.tracing.endpoint` (válida até
 > a linha 3.x) foi renomeada para `management.opentelemetry.tracing.export.otlp.endpoint`. Usar o
 > nome antigo não dá erro nenhum — o app sobe normalmente e simplesmente não exporta trace
@@ -715,6 +724,45 @@ confirma a `Notification` persistida, incluindo o cenário de evento reentregue 
 composto `accountId_createdAt` e o TTL de `processed_events`). O Spring Data MongoDB vem com a
 criação automática de índices desligada; por isso `spring.data.mongodb.auto-index-creation` está
 `true` — um teste de repositório comum não pega a ausência, a query só fica lenta.
+
+## Publicação do Outbox, partições e escala horizontal
+
+O poller de cada serviço (`OutboxPublisherScheduler`) foi o primeiro gargalo medido em carga:
+com intervalo fixo de 500 ms e um `send().get()` por evento, ~95% do tempo de uma saga era
+espera de publicação (ver [`load-tests/`](load-tests/README.md)). O desenho atual:
+
+| Decisão | Por quê |
+|---|---|
+| Intervalo de 100 ms (`outbox.poll-interval`) e lote de 100 (`outbox.batch-size`) | Corta a espera média por salto de ~250 ms para ~50 ms; a query é indexada e barata. |
+| Envio em pipeline: dispara todos os `send()` do lote e depois aguarda as confirmações | Um round-trip ao broker por lote, não por evento. Quem falha continua `PENDING`. |
+| Dreno em loop: se o lote vier cheio, lê o próximo na hora (até 20 lotes por execução) | O intervalo vira só o piso de latência com a fila vazia, não o teto de vazão. |
+| Cada lote numa transação curta (`TransactionTemplate`) | Não segura locks nem uma conexão durante o poll inteiro. |
+| `FOR UPDATE SKIP LOCKED` + só o evento mais antigo de cada agregado (`reivindicarPendentes`) | **Várias instâncias** do serviço podem rodar o poller sem publicar o mesmo evento nem inverter a ordem de uma saga; se um envio falha, ele continua `PENDING` e bloqueia os seguintes **da mesma saga** (as outras seguem). |
+
+**Resultado medido** (rampa de 1 a 12 tx/s, 2.550 sagas, uma máquina de desenvolvimento): a
+latência mediana da saga a 12 tx/s caiu de **19,7 s para 0,9 s** e o p95 de 26 s para 3,4 s, sem
+nenhum erro nem saga pendente. A tabela completa, a decomposição do tempo e uma cauda de ~3% cuja
+causa ainda não foi identificada estão em [`load-tests/README.md`](load-tests/README.md).
+
+O comportamento é *at-least-once* (um crash entre o envio e o commit reenvia o evento); os
+consumers já são idempotentes (Redis + `processed_events`). `OutboxClaimConcurrencyIT`
+(nos três serviços) prova a exclusão mútua entre duas transações concorrentes e a ordem por
+agregado, inclusive depois de uma falha simulada.
+
+**Partições e consumers em paralelo.** Os tópicos são declarados por quem os produz
+(`KafkaTopicsConfig`) com 3 partições (`app.kafka.partitions`, `app.kafka.replicas`), e cada
+`@KafkaListener` roda com 3 threads (`spring.kafka.listener.concurrency`, variável
+`KAFKA_LISTENER_CONCURRENCY`). A chave de cada mensagem é o `transferId`, então todos os eventos
+de uma saga caem na mesma partição e seguem em ordem, enquanto sagas diferentes são processadas em
+paralelo. A concorrência sobre a mesma conta continua protegida por lock otimista (`@Version`) com
+retry. O pool de conexões subiu para 20 (`DB_POOL_SIZE`) para acomodar as threads extras. A DLQ
+deixa o *producer* escolher a partição do `-dlt` (o padrão reusaria o número da partição de origem,
+que não existe no tópico de DLQ criado sob demanda com 1 partição).
+
+Limites conhecidos: o poller é seguro para várias instâncias, mas isso foi provado em teste de
+integração, não em carga com várias JVMs; e o poller continua sendo polling — a próxima etapa
+natural, se a latência por salto importar mais que a simplicidade, é CDC (Debezium) ou acordar o
+poller logo após o commit.
 
 ## Retenção de dados (Outbox e idempotência)
 
