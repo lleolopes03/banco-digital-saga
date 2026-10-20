@@ -14,6 +14,7 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:19093
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_NUM_PARTITIONS: 3 # padrao para topicos criados sob demanda (ex.: -dlt); os da saga vem do KafkaTopicsConfig
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -127,6 +128,21 @@ services:
     restart: unless-stopped
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+      # Armazenamento em disco (Badger) com retenção de 72h, em vez do padrão em memória SEM LIMITE
+      # (~120 KB por trace medido em carga: perto de 2 GB depois de ~15 mil sagas). Os traces
+      # agora sobrevivem a reinício do container e a memória do Jaeger fica estável.
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_KEY: /badger/key
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_SPAN_STORE_TTL: 72h
+    # O volume nomeado nasce com dono root e a imagem roda como usuário sem privilégio, o que
+    # impede o Badger de criar os diretórios. Aceitável em dev local; em produção use um backend
+    # gerenciado (Elasticsearch/OpenSearch/Cassandra) e um usuário sem privilégio.
+    user: "0"
+    mem_limit: 1g
+    volumes:
+      - jaeger_data:/badger
     ports:
       - "16686:16686"
       # 4317/4318 NÃO publicados no host de propósito: quem recebe OTLP de fora agora é o
@@ -198,3 +214,4 @@ volumes:
   mongo_notification_data:
   prometheus_data:
   grafana_data:
+  jaeger_data:

@@ -31,4 +31,4 @@ management:
           enabled: false # métricas são expostas via /actuator/prometheus (scrape), não push OTLP
   tracing:
     sampling:
-      probability: 1.0
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}

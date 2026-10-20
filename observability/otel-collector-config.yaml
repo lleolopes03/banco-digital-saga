@@ -7,6 +7,12 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # Primeiro da cadeia: se o Jaeger/exportador ficar lento, o coletor recusa spans novos em vez de
+  # acumular na memória até cair. Os serviços seguem funcionando (a exportação é assíncrona).
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
   batch:
 
 exporters:
@@ -24,5 +30,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [otlp_grpc/jaeger, debug]
