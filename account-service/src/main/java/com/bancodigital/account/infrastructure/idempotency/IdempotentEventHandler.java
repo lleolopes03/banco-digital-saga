@@ -31,7 +31,7 @@ import org.springframework.stereotype.Component;
  *
  * Deliberadamente NÃO envolve processamento.run() nem a gravação final em uma única transação
  * @Transactional deste componente: os métodos de negócio que este wrapper chama (ex.:
- * AccountService.confirmarDebito) já controlam sua própria transação via TransactionTemplate e
+ * AccountSagaService.confirmarDebito) já controlam sua própria transação via TransactionTemplate e
  * são @Retryable em cima de OptimisticLockingFailureException — cada tentativa de retry precisa
  * abrir sua própria transação nova. Se este wrapper abrisse uma transação externa, todo o retry
  * aconteceria dentro da MESMA transação já potencialmente marcada rollback-only pela tentativa

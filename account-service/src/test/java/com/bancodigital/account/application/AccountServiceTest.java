@@ -19,12 +19,7 @@ import com.bancodigital.account.domain.OutboxEvent;
 import com.bancodigital.account.domain.OutboxEventStatus;
 import com.bancodigital.account.domain.TransactionLogEntry;
 import com.bancodigital.account.domain.TransactionType;
-import com.bancodigital.account.domain.event.CreditRequested;
-import com.bancodigital.account.domain.event.DebitConfirmationRequested;
 import com.bancodigital.account.domain.event.DepositCompleted;
-import com.bancodigital.account.domain.event.ReleaseReservedAmount;
-import com.bancodigital.account.domain.event.ReverseDebitRequested;
-import com.bancodigital.account.domain.event.TransferRequested;
 import com.bancodigital.account.infrastructure.observability.SagaObservability;
 import com.bancodigital.account.infrastructure.persistence.AccountRepository;
 import com.bancodigital.account.infrastructure.persistence.OutboxEventRepository;
@@ -51,14 +46,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
@@ -78,27 +70,22 @@ class AccountServiceTest {
     private PlatformTransactionManager transactionManager;
 
     @Mock
-    private StringRedisTemplate redisTemplate;
-
-    @Mock
-    private ValueOperations<String, String> valueOperations;
+    private BalanceCache balanceCache;
 
     @Mock
     private SagaObservability sagaObservability;
 
-    @InjectMocks
     private AccountService accountService;
 
     @BeforeEach
-    void stubTransactionManager() {
+    void montarServico() {
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        // Mock "cru" de StringRedisTemplate não responde opsForValue() sem stub explícito; os
-        // testes aqui não validam comportamento de cache (isso é coberto por
-        // AccountServiceCacheTest com Redis real via Testcontainers), então tratamos como
-        // sempre-miss por padrão (get() retorna null).
-        lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        // O cache de saldo é mockado (sempre-miss por padrão): o comportamento real do cache é
+        // coberto por AccountServiceCacheTest, com Redis real via Testcontainers.
+        OutboxEventWriter outboxEventWriter = new OutboxEventWriter(outboxEventRepository, sagaObservability);
+        accountService = new AccountService(accountRepository, transactionLogRepository, outboxEventWriter,
+                balanceCache, transactionManager);
     }
-
     @Test
     void deveCriarContaComCpfNovoComSaldoZero() {
         when(accountRepository.findByOwnerDocument("11122233344")).thenReturn(Optional.empty());
@@ -270,179 +257,5 @@ class AccountServiceTest {
 
         verify(transactionManager).rollback(any());
         verify(transactionManager, never()).commit(any());
-    }
-
-    @Test
-    void deveReservarSaldoEPublicarTransferReservedQuandoHaSaldoSuficiente() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-        when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        UUID transferId = UUID.randomUUID();
-        TransferRequested event = new TransferRequested(transferId, account.getId(), UUID.randomUUID(),
-                new BigDecimal("300.00"), Instant.now());
-
-        accountService.reservarSaldo(event);
-
-        assertThat(account.getBalance()).isEqualByComparingTo("700.00");
-        assertThat(account.getReservedBalance()).isEqualByComparingTo("300.00");
-
-        ArgumentCaptor<OutboxEvent> captor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(captor.capture());
-        OutboxEvent outboxEvent = captor.getValue();
-        assertThat(outboxEvent.getAggregateType()).isEqualTo("Transfer");
-        assertThat(outboxEvent.getAggregateId()).isEqualTo(transferId);
-        assertThat(outboxEvent.getEventType()).isEqualTo("TransferReserved");
-    }
-
-    @Test
-    void deveRejeitarReservaEPublicarTransferReservationFailedQuandoSaldoInsuficiente() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-        when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        UUID transferId = UUID.randomUUID();
-        TransferRequested event = new TransferRequested(transferId, account.getId(), UUID.randomUUID(),
-                new BigDecimal("300.00"), Instant.now());
-
-        accountService.reservarSaldo(event);
-
-        assertThat(account.getBalance()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(account.getReservedBalance()).isEqualByComparingTo(BigDecimal.ZERO);
-
-        ArgumentCaptor<OutboxEvent> captor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(captor.capture());
-        assertThat(captor.getValue().getEventType()).isEqualTo("TransferReservationFailed");
-    }
-
-    @Test
-    void deveConfirmarDebitoEGravarTransactionLogEntryTransferOut() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
-        account.reservar(new BigDecimal("300.00"));
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-        when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        UUID transferId = UUID.randomUUID();
-        DebitConfirmationRequested event = new DebitConfirmationRequested(transferId, account.getId(),
-                new BigDecimal("300.00"), Instant.now());
-
-        accountService.confirmarDebito(event);
-
-        assertThat(account.getReservedBalance()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(account.getBalance()).isEqualByComparingTo("700.00");
-
-        ArgumentCaptor<TransactionLogEntry> logCaptor = ArgumentCaptor.forClass(TransactionLogEntry.class);
-        verify(transactionLogRepository).save(logCaptor.capture());
-        assertThat(logCaptor.getValue().getType()).isEqualTo(TransactionType.TRANSFER_OUT);
-        assertThat(logCaptor.getValue().getRelatedTransactionId()).isEqualTo(transferId);
-        assertThat(logCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
-
-        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(outboxCaptor.capture());
-        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("DebitConfirmed");
-        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(transferId);
-    }
-
-    @Test
-    void deveCreditarContaDestinoEGravarTransactionLogEntryTransferIn() {
-        Account account = Account.open("Carlos Souza", "99988877766");
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-        when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        UUID transferId = UUID.randomUUID();
-        CreditRequested event = new CreditRequested(transferId, account.getId(), new BigDecimal("300.00"), Instant.now());
-
-        accountService.creditarPorTransferencia(event);
-
-        assertThat(account.getBalance()).isEqualByComparingTo("300.00");
-
-        ArgumentCaptor<TransactionLogEntry> logCaptor = ArgumentCaptor.forClass(TransactionLogEntry.class);
-        verify(transactionLogRepository).save(logCaptor.capture());
-        assertThat(logCaptor.getValue().getType()).isEqualTo(TransactionType.TRANSFER_IN);
-        assertThat(logCaptor.getValue().getRelatedTransactionId()).isEqualTo(transferId);
-
-        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(outboxCaptor.capture());
-        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("CreditConfirmed");
-        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(transferId);
-    }
-
-    @Test
-    void devePublicarCreditFailedEmVezDeCreditarQuandoContaDestinoEstaBloqueada() {
-        Account account = Account.open("Carlos Souza", "99988877766");
-        account.bloquear();
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-
-        UUID transferId = UUID.randomUUID();
-        CreditRequested event = new CreditRequested(transferId, account.getId(), new BigDecimal("300.00"), Instant.now());
-
-        accountService.creditarPorTransferencia(event);
-
-        assertThat(account.getBalance()).isEqualByComparingTo(BigDecimal.ZERO);
-        verify(accountRepository, never()).saveAndFlush(any());
-        verify(transactionLogRepository, never()).save(any());
-
-        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(outboxCaptor.capture());
-        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("CreditFailed");
-        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(transferId);
-    }
-
-    @Test
-    void deveLiberarReservaDevolvendoValorParaBalanceEGravarReversalNoExtrato() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
-        account.reservar(new BigDecimal("300.00"));
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-        when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        UUID transferId = UUID.randomUUID();
-        ReleaseReservedAmount event = new ReleaseReservedAmount(transferId, account.getId(),
-                new BigDecimal("300.00"), Instant.now());
-
-        accountService.liberarReserva(event);
-
-        assertThat(account.getBalance()).isEqualByComparingTo("1000.00");
-        assertThat(account.getReservedBalance()).isEqualByComparingTo(BigDecimal.ZERO);
-
-        ArgumentCaptor<TransactionLogEntry> logCaptor = ArgumentCaptor.forClass(TransactionLogEntry.class);
-        verify(transactionLogRepository).save(logCaptor.capture());
-        assertThat(logCaptor.getValue().getType()).isEqualTo(TransactionType.REVERSAL);
-        assertThat(logCaptor.getValue().getRelatedTransactionId()).isEqualTo(transferId);
-        assertThat(logCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
-
-        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(outboxCaptor.capture());
-        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("ReservationReleased");
-        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(transferId);
-    }
-
-    @Test
-    void deveReverterDebitoCreditandoDeVoltaEGravarReversalNoExtrato() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("700.00"));
-        when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
-        when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        UUID transferId = UUID.randomUUID();
-        ReverseDebitRequested event = new ReverseDebitRequested(transferId, account.getId(),
-                new BigDecimal("300.00"), Instant.now());
-
-        accountService.reverterDebito(event);
-
-        assertThat(account.getBalance()).isEqualByComparingTo("1000.00");
-
-        ArgumentCaptor<TransactionLogEntry> logCaptor = ArgumentCaptor.forClass(TransactionLogEntry.class);
-        verify(transactionLogRepository).save(logCaptor.capture());
-        assertThat(logCaptor.getValue().getType()).isEqualTo(TransactionType.REVERSAL);
-        assertThat(logCaptor.getValue().getRelatedTransactionId()).isEqualTo(transferId);
-        assertThat(logCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
-
-        ArgumentCaptor<OutboxEvent> outboxCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
-        verify(outboxEventRepository).save(outboxCaptor.capture());
-        assertThat(outboxCaptor.getValue().getEventType()).isEqualTo("DebitReversed");
-        assertThat(outboxCaptor.getValue().getAggregateId()).isEqualTo(transferId);
     }
 }

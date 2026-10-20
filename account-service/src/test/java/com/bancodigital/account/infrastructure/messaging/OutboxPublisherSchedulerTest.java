@@ -89,7 +89,7 @@ class OutboxPublisherSchedulerTest extends AbstractIntegrationTest {
 
         KafkaTemplate<String, String> kafkaTemplateQuebrado = criarKafkaTemplateApontandoParaBrokerInexistente();
         OutboxPublisherScheduler schedulerComFalha = new OutboxPublisherScheduler(outboxEventRepository, kafkaTemplateQuebrado,
-                sagaObservability, transactionTemplate, 100);
+                new OutboxRecordFactory(sagaObservability), transactionTemplate, 100);
 
         schedulerComFalha.publishPendingEvents();
 
@@ -102,7 +102,7 @@ class OutboxPublisherSchedulerTest extends AbstractIntegrationTest {
     void deveDrenarVariosLotesNaMesmaExecucaoEmVezDeUmLotePorIntervalo() {
         // lote de 2 e 5 eventos: sem o dreno em loop seriam necessárias 3 execuções do scheduler
         OutboxPublisherScheduler schedulerLoteMinimo = new OutboxPublisherScheduler(outboxEventRepository, kafkaTemplate,
-                sagaObservability, transactionTemplate, 2);
+                new OutboxRecordFactory(sagaObservability), transactionTemplate, 2);
         List<UUID> ids = new java.util.ArrayList<>();
         for (int i = 0; i < 5; i++) {
             UUID accountId = UUID.randomUUID();

@@ -1,12 +1,10 @@
 package com.bancodigital.account.infrastructure.messaging;
 
-import com.bancodigital.account.application.AccountService;
+import com.bancodigital.account.application.AccountSagaService;
 import com.bancodigital.account.domain.event.ReleaseReservedAmount;
 import com.bancodigital.account.domain.event.ReverseDebitRequested;
 import com.bancodigital.account.infrastructure.idempotency.IdempotentEventHandler;
 import com.bancodigital.account.infrastructure.observability.SagaObservability;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -16,15 +14,13 @@ import org.springframework.stereotype.Component;
 @Component
 public class TransferCompensateConsumer {
 
-    private static final ObjectMapper PAYLOAD_MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
-
-    private final AccountService accountService;
+    private final AccountSagaService accountSagaService;
     private final IdempotentEventHandler idempotentEventHandler;
     private final SagaObservability sagaObservability;
 
-    public TransferCompensateConsumer(AccountService accountService, IdempotentEventHandler idempotentEventHandler,
+    public TransferCompensateConsumer(AccountSagaService accountSagaService, IdempotentEventHandler idempotentEventHandler,
                                        SagaObservability sagaObservability) {
-        this.accountService = accountService;
+        this.accountSagaService = accountSagaService;
         this.idempotentEventHandler = idempotentEventHandler;
         this.sagaObservability = sagaObservability;
     }
@@ -38,26 +34,22 @@ public class TransferCompensateConsumer {
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
                          @Header(value = "traceparent", required = false) String traceparent) {
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            try {
-                switch (eventType) {
-                    case "ReleaseReservedAmount" -> {
-                        ReleaseReservedAmount event = PAYLOAD_MAPPER.readValue(payload, ReleaseReservedAmount.class);
-                        sagaObservability.executarEtapa("compensate", traceparent,
-                                Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                                () -> accountService.liberarReserva(event));
-                    }
-                    case "ReverseDebitRequested" -> {
-                        ReverseDebitRequested event = PAYLOAD_MAPPER.readValue(payload, ReverseDebitRequested.class);
-                        sagaObservability.executarEtapa("compensate", traceparent,
-                                Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                                () -> accountService.reverterDebito(event));
-                    }
-                    default -> {
-                        // eventType desconhecido: ignora.
-                    }
+            switch (eventType) {
+                case "ReleaseReservedAmount" -> {
+                    ReleaseReservedAmount event = EventPayloadReader.ler(payload, ReleaseReservedAmount.class);
+                    sagaObservability.executarEtapa("compensate", traceparent,
+                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                            () -> accountSagaService.liberarReserva(event));
                 }
-            } catch (Exception e) {
-                throw new IllegalStateException("Falha ao processar evento de compensação (" + eventType + "): " + payload, e);
+                case "ReverseDebitRequested" -> {
+                    ReverseDebitRequested event = EventPayloadReader.ler(payload, ReverseDebitRequested.class);
+                    sagaObservability.executarEtapa("compensate", traceparent,
+                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                            () -> accountSagaService.reverterDebito(event));
+                }
+                default -> {
+                    // eventType desconhecido: ignora.
+                }
             }
         });
     }
