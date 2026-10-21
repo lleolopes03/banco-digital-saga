@@ -2,10 +2,12 @@ package com.bancodigital.transfer.web.controller;
 
 import com.bancodigital.transfer.domain.InsufficientBalanceException;
 import com.bancodigital.transfer.domain.SagaInstanceNotFoundException;
-import java.time.Instant;
-import java.util.Map;
+import com.bancodigital.transfer.web.dto.ErrorResponse;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -13,22 +15,29 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class ApiExceptionHandler {
 
     @ExceptionHandler(SagaInstanceNotFoundException.class)
-    public ResponseEntity<Map<String, Object>> handleNotFound(SagaInstanceNotFoundException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorBody(HttpStatus.NOT_FOUND, ex.getMessage()));
+    public ResponseEntity<ErrorResponse> handleNotFound(SagaInstanceNotFoundException ex) {
+        return resposta(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
     @ExceptionHandler(InsufficientBalanceException.class)
-    public ResponseEntity<Map<String, Object>> handleInsufficientBalance(InsufficientBalanceException ex) {
-        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
-                .body(errorBody(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage()));
+    public ResponseEntity<ErrorResponse> handleInsufficientBalance(InsufficientBalanceException ex) {
+        return resposta(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage());
     }
 
-    private Map<String, Object> errorBody(HttpStatus status, String message) {
-        return Map.of(
-                "timestamp", Instant.now().toString(),
-                "status", status.value(),
-                "error", status.getReasonPhrase(),
-                "message", message
-        );
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
+        String campos = ex.getBindingResult().getFieldErrors().stream()
+                .map(erro -> erro.getField() + ": " + erro.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        return resposta(HttpStatus.BAD_REQUEST, "Requisição inválida. " + campos);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleMalformedBody(HttpMessageNotReadableException ex) {
+        return resposta(HttpStatus.BAD_REQUEST, "Corpo da requisição ausente ou malformado.");
+    }
+
+    private static ResponseEntity<ErrorResponse> resposta(HttpStatus status, String message) {
+        return ResponseEntity.status(status).body(ErrorResponse.of(status, message));
     }
 }

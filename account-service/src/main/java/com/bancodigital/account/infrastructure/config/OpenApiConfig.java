@@ -8,12 +8,10 @@ import io.swagger.v3.oas.models.security.SecurityScheme;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/*
- * Swagger UI em /swagger-ui.html, spec OpenAPI em /v3/api-docs — springdoc gera os dois a partir
- * dos @RestController/DTOs já existentes, sem anotação extra na maioria dos endpoints. O único
- * código deste arquivo é o esquema "Authorize" (Bearer JWT): sem ele, o botão apareceria mas sem
- * indicar que os endpoints exigem token. Duplicado por serviço (mesma convenção já usada para
- * SecurityConfig/JwtService), já que não existe um módulo compartilhado no projeto.
+/**
+ * Metadados da spec OpenAPI (Swagger UI em /swagger-ui.html, spec em /v3/api-docs) e o esquema Bearer JWT do botão
+ * Authorize. Resumos, respostas e exemplos ficam nas anotações dos controllers e DTOs; o OpenApiContractTest
+ * garante que a spec continue igual ao comportamento real.
  */
 @Configuration
 public class OpenApiConfig {
