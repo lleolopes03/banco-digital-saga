@@ -65,8 +65,8 @@ class AccountSagaServiceTest {
     }
     @Test
     void deveReservarSaldoEPublicarTransferReservedQuandoHaSaldoSuficiente() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
+        Account account = Account.abrir("Ana Lima", "11122233344");
+        account.depositar(new BigDecimal("1000.00"));
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -89,7 +89,7 @@ class AccountSagaServiceTest {
 
     @Test
     void deveRejeitarReservaEPublicarTransferReservationFailedQuandoSaldoInsuficiente() {
-        Account account = Account.open("Ana Lima", "11122233344");
+        Account account = Account.abrir("Ana Lima", "11122233344");
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -109,8 +109,8 @@ class AccountSagaServiceTest {
 
     @Test
     void deveConfirmarDebitoEGravarTransactionLogEntryTransferOut() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
+        Account account = Account.abrir("Ana Lima", "11122233344");
+        account.depositar(new BigDecimal("1000.00"));
         account.reservar(new BigDecimal("300.00"));
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -138,7 +138,7 @@ class AccountSagaServiceTest {
 
     @Test
     void deveCreditarContaDestinoEGravarTransactionLogEntryTransferIn() {
-        Account account = Account.open("Carlos Souza", "99988877766");
+        Account account = Account.abrir("Carlos Souza", "99988877766");
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -162,7 +162,7 @@ class AccountSagaServiceTest {
 
     @Test
     void devePublicarCreditFailedEmVezDeCreditarQuandoContaDestinoEstaBloqueada() {
-        Account account = Account.open("Carlos Souza", "99988877766");
+        Account account = Account.abrir("Carlos Souza", "99988877766");
         account.bloquear();
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
 
@@ -183,8 +183,8 @@ class AccountSagaServiceTest {
 
     @Test
     void deveLiberarReservaDevolvendoValorParaBalanceEGravarReversalNoExtrato() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
+        Account account = Account.abrir("Ana Lima", "11122233344");
+        account.depositar(new BigDecimal("1000.00"));
         account.reservar(new BigDecimal("300.00"));
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -212,8 +212,8 @@ class AccountSagaServiceTest {
 
     @Test
     void deveReverterDebitoCreditandoDeVoltaEGravarReversalNoExtrato() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("700.00"));
+        Account account = Account.abrir("Ana Lima", "11122233344");
+        account.depositar(new BigDecimal("700.00"));
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -239,8 +239,8 @@ class AccountSagaServiceTest {
 
     @Test
     void deveInvalidarOCacheDeSaldoDaContaAfetadaDepoisDoPasso() {
-        Account account = Account.open("Ana Lima", "11122233344");
-        account.deposit(new BigDecimal("1000.00"));
+        Account account = Account.abrir("Ana Lima", "11122233344");
+        account.depositar(new BigDecimal("1000.00"));
         when(accountRepository.findById(account.getId())).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 

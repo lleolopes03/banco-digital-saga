@@ -59,7 +59,7 @@ public class AccountService {
             throw new DuplicateOwnerDocumentException(request.ownerDocument());
         });
 
-        Account saved = accountRepository.save(Account.open(request.ownerName(), request.ownerDocument()));
+        Account saved = accountRepository.save(Account.abrir(request.ownerName(), request.ownerDocument()));
         return AccountResponse.from(saved);
     }
 
@@ -95,10 +95,10 @@ public class AccountService {
 
         Account saved = transactionTemplate.execute(status -> {
             Account account = buscarPorId(accountId);
-            account.deposit(request.valor());
+            account.depositar(request.valor());
             Account updated = accountRepository.saveAndFlush(account);
 
-            transactionLogRepository.save(TransactionLogEntry.deposit(transactionId, accountId, request.valor(),
+            transactionLogRepository.save(TransactionLogEntry.deposito(transactionId, accountId, request.valor(),
                     updated.getBalance(), request.description()));
             outboxEventWriter.gravarParaConta(accountId,
                     new DepositCompleted(transactionId, accountId, request.valor(), Instant.now()));

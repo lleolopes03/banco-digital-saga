@@ -38,8 +38,8 @@ class DebitConfirmationRequestedIdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void deveDebitarApenasUmaVezMesmoComEventoReentregueDuasVezes() {
-        Account conta = Account.open("Redelivery Teste", "55566677788");
-        conta.deposit(new BigDecimal("1000.00"));
+        Account conta = Account.abrir("Redelivery Teste", "55566677788");
+        conta.depositar(new BigDecimal("1000.00"));
         conta.reservar(new BigDecimal("300.00"));
         accountRepository.saveAndFlush(conta);
 

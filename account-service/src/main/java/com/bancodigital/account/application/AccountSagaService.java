@@ -82,7 +82,7 @@ public class AccountSagaService {
             account.confirmarDebito(event.valor());
             Account updated = accountRepository.saveAndFlush(account);
 
-            transactionLogRepository.save(TransactionLogEntry.transferOut(event.transferId(), event.accountOrigemId(),
+            transactionLogRepository.save(TransactionLogEntry.transferenciaEnviada(event.transferId(), event.accountOrigemId(),
                     event.valor(), updated.getBalance(), "Transferência enviada"));
             outboxEventWriter.gravarParaTransferencia(event.transferId(),
                     new DebitConfirmed(event.transferId(), event.accountOrigemId(), event.valor(), Instant.now()));
@@ -105,10 +105,10 @@ public class AccountSagaService {
                 return;
             }
 
-            account.deposit(event.valor());
+            account.depositar(event.valor());
             Account updated = accountRepository.saveAndFlush(account);
 
-            transactionLogRepository.save(TransactionLogEntry.transferIn(event.transferId(),
+            transactionLogRepository.save(TransactionLogEntry.transferenciaRecebida(event.transferId(),
                     event.accountDestinoId(), event.valor(), updated.getBalance(), "Transferência recebida"));
             outboxEventWriter.gravarParaTransferencia(event.transferId(),
                     new CreditConfirmed(event.transferId(), event.accountDestinoId(), event.valor(), Instant.now()));
@@ -128,7 +128,7 @@ public class AccountSagaService {
             account.liberarReserva(event.valor());
             Account updated = accountRepository.saveAndFlush(account);
 
-            transactionLogRepository.save(TransactionLogEntry.reversal(event.transferId(), event.accountOrigemId(),
+            transactionLogRepository.save(TransactionLogEntry.estorno(event.transferId(), event.accountOrigemId(),
                     event.valor(), updated.getBalance(), "Estorno de reserva: transferência não concluída"));
             outboxEventWriter.gravarParaTransferencia(event.transferId(),
                     new ReservationReleased(event.transferId(), Instant.now()));
@@ -146,10 +146,10 @@ public class AccountSagaService {
     public void reverterDebito(ReverseDebitRequested event) {
         executarPasso(event.accountOrigemId(), () -> {
             Account account = buscarConta(event.accountOrigemId());
-            account.deposit(event.valor());
+            account.depositar(event.valor());
             Account updated = accountRepository.saveAndFlush(account);
 
-            transactionLogRepository.save(TransactionLogEntry.reversal(event.transferId(), event.accountOrigemId(),
+            transactionLogRepository.save(TransactionLogEntry.estorno(event.transferId(), event.accountOrigemId(),
                     event.valor(), updated.getBalance(), "Estorno de débito: crédito ao destinatário falhou"));
             outboxEventWriter.gravarParaTransferencia(event.transferId(),
                     new DebitReversed(event.transferId(), event.accountOrigemId(), Instant.now()));

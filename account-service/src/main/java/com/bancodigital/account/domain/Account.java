@@ -55,7 +55,7 @@ public class Account {
         this.createdAt = createdAt;
     }
 
-    public static Account open(String ownerName, String ownerDocument) {
+    public static Account abrir(String ownerName, String ownerDocument) {
         return new Account(UUID.randomUUID(), ownerName, ownerDocument, BigDecimal.ZERO, BigDecimal.ZERO,
                 AccountStatus.ACTIVE, Instant.now());
     }
@@ -92,7 +92,7 @@ public class Account {
         return createdAt;
     }
 
-    public void deposit(BigDecimal amount) {
+    public void depositar(BigDecimal amount) {
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new InvalidDepositAmountException(amount);
         }

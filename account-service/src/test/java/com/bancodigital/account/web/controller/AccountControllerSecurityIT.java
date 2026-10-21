@@ -23,7 +23,7 @@ class AccountControllerSecurityIT extends AbstractIntegrationTest {
 
     @Test
     void deveRetornar200AoAcessarSaldoDaPropriaConta() {
-        Account minhaConta = accountRepository.save(Account.open("Dono da Conta", "33344455501"));
+        Account minhaConta = accountRepository.save(Account.abrir("Dono da Conta", "33344455501"));
         String token = criarUsuarioEObterToken(restTemplate, minhaConta.getId());
 
         ResponseEntity<BalanceResponse> response = restTemplate.exchange(
@@ -36,8 +36,8 @@ class AccountControllerSecurityIT extends AbstractIntegrationTest {
 
     @Test
     void deveRetornar403AoAcessarSaldoDeOutraConta() {
-        Account minhaConta = accountRepository.save(Account.open("Dono da Conta", "33344455502"));
-        Account contaAlheia = accountRepository.save(Account.open("Outra Pessoa", "33344455503"));
+        Account minhaConta = accountRepository.save(Account.abrir("Dono da Conta", "33344455502"));
+        Account contaAlheia = accountRepository.save(Account.abrir("Outra Pessoa", "33344455503"));
         String token = criarUsuarioEObterToken(restTemplate, minhaConta.getId());
 
         ResponseEntity<String> response = restTemplate.exchange(
@@ -49,7 +49,7 @@ class AccountControllerSecurityIT extends AbstractIntegrationTest {
 
     @Test
     void deveRetornar401AoAcessarSaldoSemToken() {
-        Account conta = accountRepository.save(Account.open("Sem Token", "33344455504"));
+        Account conta = accountRepository.save(Account.abrir("Sem Token", "33344455504"));
 
         ResponseEntity<String> response = restTemplate.getForEntity(
                 "/api/accounts/" + conta.getId() + "/balance", String.class);

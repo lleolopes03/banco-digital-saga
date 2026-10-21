@@ -55,25 +55,25 @@ public class TransactionLogEntry {
         this.createdAt = createdAt;
     }
 
-    public static TransactionLogEntry deposit(UUID transactionId, UUID accountId, BigDecimal amount,
+    public static TransactionLogEntry deposito(UUID transactionId, UUID accountId, BigDecimal amount,
                                                 BigDecimal balanceAfter, String description) {
         return new TransactionLogEntry(transactionId, accountId, TransactionType.DEPOSIT, amount, balanceAfter,
                 null, description, Instant.now());
     }
 
-    public static TransactionLogEntry transferOut(UUID transferId, UUID accountId, BigDecimal amount,
+    public static TransactionLogEntry transferenciaEnviada(UUID transferId, UUID accountId, BigDecimal amount,
                                                     BigDecimal balanceAfter, String description) {
         return new TransactionLogEntry(UUID.randomUUID(), accountId, TransactionType.TRANSFER_OUT, amount,
                 balanceAfter, transferId, description, Instant.now());
     }
 
-    public static TransactionLogEntry transferIn(UUID transferId, UUID accountId, BigDecimal amount,
+    public static TransactionLogEntry transferenciaRecebida(UUID transferId, UUID accountId, BigDecimal amount,
                                                    BigDecimal balanceAfter, String description) {
         return new TransactionLogEntry(UUID.randomUUID(), accountId, TransactionType.TRANSFER_IN, amount,
                 balanceAfter, transferId, description, Instant.now());
     }
 
-    public static TransactionLogEntry reversal(UUID transferId, UUID accountId, BigDecimal amount,
+    public static TransactionLogEntry estorno(UUID transferId, UUID accountId, BigDecimal amount,
                                                  BigDecimal balanceAfter, String description) {
         return new TransactionLogEntry(UUID.randomUUID(), accountId, TransactionType.REVERSAL, amount,
                 balanceAfter, transferId, description, Instant.now());

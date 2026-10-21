@@ -102,7 +102,7 @@ class AccountServiceTest {
     @Test
     void deveLancarExcecaoAoCriarContaComCpfDuplicado() {
         when(accountRepository.findByOwnerDocument("11122233344"))
-                .thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
+                .thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
 
         assertThatThrownBy(() -> accountService.criarConta(new CreateAccountRequest("Outra Pessoa", "11122233344")))
                 .isInstanceOf(DuplicateOwnerDocumentException.class);
@@ -122,7 +122,7 @@ class AccountServiceTest {
     @Test
     void deveAtualizarSaldoCorretamenteAoDepositarValorPositivo() {
         UUID accountId = UUID.randomUUID();
-        Account account = Account.open("Ana Lima", "11122233344");
+        Account account = Account.abrir("Ana Lima", "11122233344");
         when(accountRepository.findById(accountId)).thenReturn(Optional.of(account));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -137,7 +137,7 @@ class AccountServiceTest {
     @ValueSource(strings = {"0", "-10.50"})
     void deveLancarExcecaoAoDepositarValorNegativoOuZero(String valorInvalido) {
         UUID accountId = UUID.randomUUID();
-        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
 
         assertThatThrownBy(() -> accountService.depositar(accountId, new DepositRequest(new BigDecimal(valorInvalido), null)))
                 .isInstanceOf(InvalidDepositAmountException.class);
@@ -149,7 +149,7 @@ class AccountServiceTest {
     void doisDepositosConcorrentesNaMesmaContaDevemSerAplicadosCorretamente() throws Exception {
         UUID accountId = UUID.randomUUID();
         when(accountRepository.findById(accountId))
-                .thenAnswer(invocation -> Optional.of(Account.open("Ana Lima", "11122233344")));
+                .thenAnswer(invocation -> Optional.of(Account.abrir("Ana Lima", "11122233344")));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         CompletableFuture<AccountResponse> deposito1 = CompletableFuture.supplyAsync(
@@ -169,7 +169,7 @@ class AccountServiceTest {
     @Test
     void deveGerarEntradaNoExtratoComTipoDepositoAoDepositar() {
         UUID accountId = UUID.randomUUID();
-        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         accountService.depositar(accountId, new DepositRequest(new BigDecimal("150.00"), "salário"));
@@ -187,8 +187,8 @@ class AccountServiceTest {
     void deveFiltrarExtratoPorPeriodoInformado() {
         UUID accountId = UUID.randomUUID();
         Pageable pageable = PageRequest.of(0, 20);
-        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
-        TransactionLogEntry entry = TransactionLogEntry.deposit(UUID.randomUUID(), accountId,
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
+        TransactionLogEntry entry = TransactionLogEntry.deposito(UUID.randomUUID(), accountId,
                 new BigDecimal("10.00"), new BigDecimal("10.00"), null);
         when(transactionLogRepository.findByAccountIdAndCreatedAtBetweenOrderByCreatedAtDesc(eq(accountId), any(), any(), eq(pageable)))
                 .thenReturn(new PageImpl<>(List.of(entry), pageable, 1));
@@ -210,7 +210,7 @@ class AccountServiceTest {
     void deveRetornarListaVaziaParaContaSemMovimentacoes() {
         UUID accountId = UUID.randomUUID();
         Pageable pageable = PageRequest.of(0, 20);
-        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
         when(transactionLogRepository.findByAccountIdAndCreatedAtBetweenOrderByCreatedAtDesc(eq(accountId), any(), any(), eq(pageable)))
                 .thenReturn(new PageImpl<>(List.of(), pageable, 0));
 
@@ -223,7 +223,7 @@ class AccountServiceTest {
     @Test
     void deveGravarOutboxEventComPayloadCorretoNaMesmaTransacaoDoDeposito() throws Exception {
         UUID accountId = UUID.randomUUID();
-        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         accountService.depositar(accountId, new DepositRequest(new BigDecimal("150.00"), "salário"));
@@ -247,7 +247,7 @@ class AccountServiceTest {
     @Test
     void deveFazerRollbackDoDepositoSeGravacaoDoOutboxFalhar() {
         UUID accountId = UUID.randomUUID();
-        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.open("Ana Lima", "11122233344")));
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(Account.abrir("Ana Lima", "11122233344")));
         when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(outboxEventRepository.save(any(OutboxEvent.class))).thenThrow(new RuntimeException("falha simulada ao gravar outbox"));
 
