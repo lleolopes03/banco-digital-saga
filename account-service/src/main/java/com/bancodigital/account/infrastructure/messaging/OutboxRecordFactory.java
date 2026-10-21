@@ -1,6 +1,14 @@
 package com.bancodigital.account.infrastructure.messaging;
 
 import com.bancodigital.account.domain.OutboxEvent;
+import com.bancodigital.account.domain.event.CreditConfirmed;
+import com.bancodigital.account.domain.event.CreditFailed;
+import com.bancodigital.account.domain.event.DebitConfirmed;
+import com.bancodigital.account.domain.event.DebitReversed;
+import com.bancodigital.account.domain.event.DepositCompleted;
+import com.bancodigital.account.domain.event.ReservationReleased;
+import com.bancodigital.account.domain.event.TransferReservationFailed;
+import com.bancodigital.account.domain.event.TransferReserved;
 import com.bancodigital.account.infrastructure.observability.SagaObservability;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -23,14 +31,14 @@ public class OutboxRecordFactory {
     // como header porque alguns tópicos (transfer.reserved, transfer.credited, transfer.compensated)
     // carregam mais de um tipo e o consumidor precisa distingui-los sem depender do formato do payload.
     private static final Map<String, String> TOPICO_POR_EVENTO = Map.of(
-            "DepositCompleted", "account.events",
-            "TransferReserved", "transfer.reserved",
-            "TransferReservationFailed", "transfer.reserved",
-            "DebitConfirmed", "transfer.debited",
-            "CreditConfirmed", "transfer.credited",
-            "CreditFailed", "transfer.credited",
-            "ReservationReleased", "transfer.compensated",
-            "DebitReversed", "transfer.compensated"
+            DepositCompleted.class.getSimpleName(), "account.events",
+            TransferReserved.class.getSimpleName(), "transfer.reserved",
+            TransferReservationFailed.class.getSimpleName(), "transfer.reserved",
+            DebitConfirmed.class.getSimpleName(), "transfer.debited",
+            CreditConfirmed.class.getSimpleName(), "transfer.credited",
+            CreditFailed.class.getSimpleName(), "transfer.credited",
+            ReservationReleased.class.getSimpleName(), "transfer.compensated",
+            DebitReversed.class.getSimpleName(), "transfer.compensated"
     );
 
     private final SagaObservability sagaObservability;

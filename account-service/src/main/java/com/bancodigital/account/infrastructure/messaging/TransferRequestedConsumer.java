@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class TransferRequestedConsumer {
 
-    private static final String EVENT_TYPE = "TransferRequested";
+    private static final String EVENT_TYPE = TransferRequested.class.getSimpleName();
 
     private final AccountSagaService accountSagaService;
     private final IdempotentEventHandler idempotentEventHandler;

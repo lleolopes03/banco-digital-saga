@@ -14,47 +14,26 @@ import org.springframework.stereotype.Component;
 @Component
 public class TransferReservedConsumer {
 
-    private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
-    private final SagaObservability sagaObservability;
+    private final EventRouter router;
 
     public TransferReservedConsumer(SagaOrchestratorService sagaOrchestratorService, IdempotentEventHandler idempotentEventHandler,
-                                     SagaObservability sagaObservability) {
-        this.sagaOrchestratorService = sagaOrchestratorService;
+            SagaObservability sagaObservability) {
         this.idempotentEventHandler = idempotentEventHandler;
-        this.sagaObservability = sagaObservability;
+        this.router = EventRouter.ignorandoDesconhecidos()
+                .quando(TransferReserved.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.reserve_ack", traceparent,
+                        Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                        () -> sagaOrchestratorService.processarReservaConfirmada(event)))
+                .quando(TransferReservationFailed.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.reservation_failed", traceparent,
+                        Map.of("transferId", event.transferId().toString(), "motivo", String.valueOf(event.motivo())),
+                        () -> sagaOrchestratorService.processarReservaFalhou(event)));
     }
 
-    /*
-     * transfer.reserved carrega TransferReserved e TransferReservationFailed (publicados pelo
-     * account-service como resultado da mesma etapa de reserva), distinguidos pelo header
-     * eventType. Qualquer outro tipo é ignorado.
-     */
+    // transfer.reserved carrega TransferReserved e TransferReservationFailed (resultado da mesma etapa de reserva no account-service).
     @KafkaListener(topics = "transfer.reserved", groupId = "transfer-service")
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
-                         @Header(value = "traceparent", required = false) String traceparent) {
-        switch (eventType) {
-            case "TransferReserved" -> idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType,
-                    () -> processarReserva(payload, traceparent));
-            case "TransferReservationFailed" -> idempotentEventHandler.processarSeNovo(UUID.fromString(eventId),
-                    eventType, () -> processarFalhaDeReserva(payload, traceparent));
-            default -> {
-                // outros tipos neste tópico não interessam ao orquestrador
-            }
-        }
-    }
-
-    private void processarReserva(String payload, String traceparent) {
-        TransferReserved event = EventPayloadReader.ler(payload, TransferReserved.class);
-        sagaObservability.executarEtapa("orchestrate.reserve_ack", traceparent,
-                Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                () -> sagaOrchestratorService.processarReservaConfirmada(event));
-    }
-
-    private void processarFalhaDeReserva(String payload, String traceparent) {
-        TransferReservationFailed event = EventPayloadReader.ler(payload, TransferReservationFailed.class);
-        sagaObservability.executarEtapa("orchestrate.reservation_failed", traceparent,
-                Map.of("transferId", event.transferId().toString(), "motivo", String.valueOf(event.motivo())),
-                () -> sagaOrchestratorService.processarReservaFalhou(event));
+            @Header(value = "traceparent", required = false) String traceparent) {
+        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType,
+                () -> router.encaminhar(eventType, payload, traceparent));
     }
 }

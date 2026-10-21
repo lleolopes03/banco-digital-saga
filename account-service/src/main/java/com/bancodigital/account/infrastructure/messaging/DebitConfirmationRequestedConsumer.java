@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class DebitConfirmationRequestedConsumer {
 
-    private static final String EVENT_TYPE = "DebitConfirmationRequested";
+    private static final String EVENT_TYPE = DebitConfirmationRequested.class.getSimpleName();
 
     private final AccountSagaService accountSagaService;
     private final IdempotentEventHandler idempotentEventHandler;

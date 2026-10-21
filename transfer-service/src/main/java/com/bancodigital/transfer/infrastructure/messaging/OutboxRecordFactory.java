@@ -1,6 +1,13 @@
 package com.bancodigital.transfer.infrastructure.messaging;
 
 import com.bancodigital.transfer.domain.OutboxEvent;
+import com.bancodigital.transfer.domain.event.CreditRequested;
+import com.bancodigital.transfer.domain.event.DebitConfirmationRequested;
+import com.bancodigital.transfer.domain.event.ReleaseReservedAmount;
+import com.bancodigital.transfer.domain.event.ReverseDebitRequested;
+import com.bancodigital.transfer.domain.event.TransferCompleted;
+import com.bancodigital.transfer.domain.event.TransferFailed;
+import com.bancodigital.transfer.domain.event.TransferRequested;
 import com.bancodigital.transfer.infrastructure.observability.SagaObservability;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -24,13 +31,13 @@ public class OutboxRecordFactory {
     // transfer.compensate, e os eventos terminais (TransferCompleted, TransferFailed) dividem
     // transfer.finished — distinguidos pelo header eventType.
     private static final Map<String, String> TOPICO_POR_EVENTO = Map.of(
-            "TransferRequested", "transfer.requested",
-            "DebitConfirmationRequested", "transfer.debit",
-            "CreditRequested", "transfer.credit",
-            "ReleaseReservedAmount", "transfer.compensate",
-            "ReverseDebitRequested", "transfer.compensate",
-            "TransferCompleted", "transfer.finished",
-            "TransferFailed", "transfer.finished"
+            TransferRequested.class.getSimpleName(), "transfer.requested",
+            DebitConfirmationRequested.class.getSimpleName(), "transfer.debit",
+            CreditRequested.class.getSimpleName(), "transfer.credit",
+            ReleaseReservedAmount.class.getSimpleName(), "transfer.compensate",
+            ReverseDebitRequested.class.getSimpleName(), "transfer.compensate",
+            TransferCompleted.class.getSimpleName(), "transfer.finished",
+            TransferFailed.class.getSimpleName(), "transfer.finished"
     );
 
     private final SagaObservability sagaObservability;

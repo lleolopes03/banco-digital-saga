@@ -14,41 +14,26 @@ import org.springframework.stereotype.Component;
 @Component
 public class TransferFinishedConsumer {
 
-    private final NotificationService notificationService;
     private final IdempotentEventHandler idempotentEventHandler;
-    private final SagaObservability sagaObservability;
+    private final EventRouter router;
 
     public TransferFinishedConsumer(NotificationService notificationService, IdempotentEventHandler idempotentEventHandler,
-                                     SagaObservability sagaObservability) {
-        this.notificationService = notificationService;
+            SagaObservability sagaObservability) {
         this.idempotentEventHandler = idempotentEventHandler;
-        this.sagaObservability = sagaObservability;
+        this.router = EventRouter.rejeitandoDesconhecidos("transfer.finished")
+                .quando(TransferCompleted.class, (event, traceparent) -> sagaObservability.executarEtapa("notify", traceparent,
+                        Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                        () -> notificationService.registrarTransferConcluida(event)))
+                .quando(TransferFailed.class, (event, traceparent) -> sagaObservability.executarEtapa("notify", traceparent,
+                        Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                        () -> notificationService.registrarTransferFalhou(event)));
     }
 
-    /*
-     * O tópico transfer.finished carrega os dois eventos terminais da saga (TransferCompleted e
-     * TransferFailed, publicados pelo transfer-service via Outbox) — mesmo padrão de tópico
-     * compartilhado + header eventType já usado em transfer.compensate.
-     */
+    // transfer.finished carrega os dois eventos terminais da saga: TransferCompleted e TransferFailed.
     @KafkaListener(topics = "transfer.finished", groupId = "notification-service")
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
-                         @Header(value = "traceparent", required = false) String traceparent) {
-        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            switch (eventType) {
-                case "TransferCompleted" -> {
-                    TransferCompleted event = EventPayloadReader.ler(payload, TransferCompleted.class);
-                    sagaObservability.executarEtapa("notify", traceparent,
-                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                            () -> notificationService.registrarTransferConcluida(event));
-                }
-                case "TransferFailed" -> {
-                    TransferFailed event = EventPayloadReader.ler(payload, TransferFailed.class);
-                    sagaObservability.executarEtapa("notify", traceparent,
-                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                            () -> notificationService.registrarTransferFalhou(event));
-                }
-                default -> throw new IllegalStateException("eventType desconhecido em transfer.finished: " + eventType);
-            }
-        });
+            @Header(value = "traceparent", required = false) String traceparent) {
+        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType,
+                () -> router.encaminhar(eventType, payload, traceparent));
     }
 }

@@ -14,40 +14,26 @@ import org.springframework.stereotype.Component;
 @Component
 public class CreditConfirmedConsumer {
 
-    private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
-    private final SagaObservability sagaObservability;
+    private final EventRouter router;
 
     public CreditConfirmedConsumer(SagaOrchestratorService sagaOrchestratorService, IdempotentEventHandler idempotentEventHandler,
-                                    SagaObservability sagaObservability) {
-        this.sagaOrchestratorService = sagaOrchestratorService;
+            SagaObservability sagaObservability) {
         this.idempotentEventHandler = idempotentEventHandler;
-        this.sagaObservability = sagaObservability;
+        this.router = EventRouter.ignorandoDesconhecidos()
+                .quando(CreditConfirmed.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
+                        Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
+                        () -> sagaOrchestratorService.processarCreditoConfirmado(event)))
+                .quando(CreditFailed.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
+                        Map.of("transferId", event.transferId().toString()),
+                        () -> sagaOrchestratorService.processarCreditoFalhou(event)));
     }
 
-    // transfer.credited carrega CreditConfirmed e CreditFailed (conta destino bloqueada/fechada),
-    // distinguidos pelo header eventType adicionado pelo OutboxPublisherScheduler do account-service.
+    // transfer.credited carrega CreditConfirmed e CreditFailed (conta destino bloqueada/fechada).
     @KafkaListener(topics = "transfer.credited", groupId = "transfer-service")
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
-                         @Header(value = "traceparent", required = false) String traceparent) {
-        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            switch (eventType) {
-                case "CreditConfirmed" -> {
-                    CreditConfirmed event = EventPayloadReader.ler(payload, CreditConfirmed.class);
-                    sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
-                            Map.of("transferId", event.transferId().toString(), "valor", event.valor().toString()),
-                            () -> sagaOrchestratorService.processarCreditoConfirmado(event));
-                }
-                case "CreditFailed" -> {
-                    CreditFailed event = EventPayloadReader.ler(payload, CreditFailed.class);
-                    sagaObservability.executarEtapa("orchestrate.credit_result", traceparent,
-                            Map.of("transferId", event.transferId().toString()),
-                            () -> sagaOrchestratorService.processarCreditoFalhou(event));
-                }
-                default -> {
-                    // eventType desconhecido: ignora.
-                }
-            }
-        });
+            @Header(value = "traceparent", required = false) String traceparent) {
+        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType,
+                () -> router.encaminhar(eventType, payload, traceparent));
     }
 }

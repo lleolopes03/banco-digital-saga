@@ -34,7 +34,7 @@ public class TransferReservedConsumer {
     @KafkaListener(topics = "transfer.reserved", groupId = "antifraud-service")
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
                          @Header(value = "traceparent", required = false) String traceparent) {
-        if (!"TransferReserved".equals(eventType)) {
+        if (!TransferReserved.class.getSimpleName().equals(eventType)) {
             return;
         }
         idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {

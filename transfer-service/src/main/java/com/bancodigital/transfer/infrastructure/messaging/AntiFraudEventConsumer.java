@@ -14,40 +14,26 @@ import org.springframework.stereotype.Component;
 @Component
 public class AntiFraudEventConsumer {
 
-    private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
-    private final SagaObservability sagaObservability;
+    private final EventRouter router;
 
     public AntiFraudEventConsumer(SagaOrchestratorService sagaOrchestratorService, IdempotentEventHandler idempotentEventHandler,
-                                   SagaObservability sagaObservability) {
-        this.sagaOrchestratorService = sagaOrchestratorService;
+            SagaObservability sagaObservability) {
         this.idempotentEventHandler = idempotentEventHandler;
-        this.sagaObservability = sagaObservability;
+        this.router = EventRouter.ignorandoDesconhecidos()
+                .quando(AntiFraudApproved.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
+                        Map.of("transferId", event.transferId().toString()),
+                        () -> sagaOrchestratorService.processarAntifraudeAprovada(event)))
+                .quando(AntiFraudRejected.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
+                        Map.of("transferId", event.transferId().toString()),
+                        () -> sagaOrchestratorService.processarAntifraudeRejeitada(event)));
     }
 
-    // antifraud.events carrega AntiFraudApproved e AntiFraudRejected, distinguidos pelo header
-    // eventType (adicionado pelo OutboxPublisherScheduler do antifraud-service).
+    // antifraud.events carrega AntiFraudApproved e AntiFraudRejected.
     @KafkaListener(topics = "antifraud.events", groupId = "transfer-service")
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
-                         @Header(value = "traceparent", required = false) String traceparent) {
-        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            switch (eventType) {
-                case "AntiFraudApproved" -> {
-                    AntiFraudApproved event = EventPayloadReader.ler(payload, AntiFraudApproved.class);
-                    sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
-                            Map.of("transferId", event.transferId().toString()),
-                            () -> sagaOrchestratorService.processarAntifraudeAprovada(event));
-                }
-                case "AntiFraudRejected" -> {
-                    AntiFraudRejected event = EventPayloadReader.ler(payload, AntiFraudRejected.class);
-                    sagaObservability.executarEtapa("orchestrate.antifraud_result", traceparent,
-                            Map.of("transferId", event.transferId().toString()),
-                            () -> sagaOrchestratorService.processarAntifraudeRejeitada(event));
-                }
-                default -> {
-                    // eventType desconhecido: ignora.
-                }
-            }
-        });
+            @Header(value = "traceparent", required = false) String traceparent) {
+        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType,
+                () -> router.encaminhar(eventType, payload, traceparent));
     }
 }

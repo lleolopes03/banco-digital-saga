@@ -14,41 +14,26 @@ import org.springframework.stereotype.Component;
 @Component
 public class TransferCompensatedConsumer {
 
-    private final SagaOrchestratorService sagaOrchestratorService;
     private final IdempotentEventHandler idempotentEventHandler;
-    private final SagaObservability sagaObservability;
+    private final EventRouter router;
 
     public TransferCompensatedConsumer(SagaOrchestratorService sagaOrchestratorService, IdempotentEventHandler idempotentEventHandler,
-                                        SagaObservability sagaObservability) {
-        this.sagaOrchestratorService = sagaOrchestratorService;
+            SagaObservability sagaObservability) {
         this.idempotentEventHandler = idempotentEventHandler;
-        this.sagaObservability = sagaObservability;
+        this.router = EventRouter.ignorandoDesconhecidos()
+                .quando(ReservationReleased.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
+                        Map.of("transferId", event.transferId().toString()),
+                        () -> sagaOrchestratorService.processarReservaLiberada(event)))
+                .quando(DebitReversed.class, (event, traceparent) -> sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
+                        Map.of("transferId", event.transferId().toString()),
+                        () -> sagaOrchestratorService.processarDebitoRevertido(event)));
     }
 
-    // transfer.compensated carrega os resultados de uma compensação executada pelo account-service:
-    // ReservationReleased (cenário 1/timeout pré-débito) e DebitReversed (cenário 2/timeout pós-débito),
-    // distinguidos pelo header eventType.
+    // transfer.compensated carrega os resultados das compensações: ReservationReleased e DebitReversed.
     @KafkaListener(topics = "transfer.compensated", groupId = "transfer-service")
     public void consume(String payload, @Header("eventType") String eventType, @Header("eventId") String eventId,
-                         @Header(value = "traceparent", required = false) String traceparent) {
-        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType, () -> {
-            switch (eventType) {
-                case "ReservationReleased" -> {
-                    ReservationReleased event = EventPayloadReader.ler(payload, ReservationReleased.class);
-                    sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
-                            Map.of("transferId", event.transferId().toString()),
-                            () -> sagaOrchestratorService.processarReservaLiberada(event));
-                }
-                case "DebitReversed" -> {
-                    DebitReversed event = EventPayloadReader.ler(payload, DebitReversed.class);
-                    sagaObservability.executarEtapa("orchestrate.compensation_ack", traceparent,
-                            Map.of("transferId", event.transferId().toString()),
-                            () -> sagaOrchestratorService.processarDebitoRevertido(event));
-                }
-                default -> {
-                    // eventType desconhecido: ignora.
-                }
-            }
-        });
+            @Header(value = "traceparent", required = false) String traceparent) {
+        idempotentEventHandler.processarSeNovo(UUID.fromString(eventId), eventType,
+                () -> router.encaminhar(eventType, payload, traceparent));
     }
 }

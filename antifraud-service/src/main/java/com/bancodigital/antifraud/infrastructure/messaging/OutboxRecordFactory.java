@@ -1,6 +1,8 @@
 package com.bancodigital.antifraud.infrastructure.messaging;
 
 import com.bancodigital.antifraud.domain.OutboxEvent;
+import com.bancodigital.antifraud.domain.event.AntiFraudApproved;
+import com.bancodigital.antifraud.domain.event.AntiFraudRejected;
 import com.bancodigital.antifraud.infrastructure.observability.SagaObservability;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -23,8 +25,8 @@ public class OutboxRecordFactory {
     // permite ao transfer-service diferenciá-los ao consumir. Tipo desconhecido falha (o evento fica
     // PENDING e é registrado) em vez de ser publicado às cegas num tópico de negócio.
     private static final Map<String, String> TOPICO_POR_EVENTO = Map.of(
-            "AntiFraudApproved", "antifraud.events",
-            "AntiFraudRejected", "antifraud.events"
+            AntiFraudApproved.class.getSimpleName(), "antifraud.events",
+            AntiFraudRejected.class.getSimpleName(), "antifraud.events"
     );
 
     private final SagaObservability sagaObservability;
