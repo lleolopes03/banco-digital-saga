@@ -9,6 +9,9 @@ env:
   JAVA_VERSION: '21'
   JAVA_DISTRIBUTION: 'temurin'
   NODE_VERSION: '22'
+  # Retry nos downloads do Maven Central (uma falha transitória de rede já derrubou um job) e log sem a
+  # barra de progresso de download.
+  MAVEN_ARGS: '-ntp -Daether.connector.http.retryHandler.count=5 -Dmaven.wagon.http.retryHandler.count=5'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -241,23 +244,30 @@ jobs:
 
       - name: Install account-service jar (biblioteca para o e2e-tests)
         working-directory: account-service
-        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests 2>&1 | tee mvn.log
 
       - name: Install antifraud-service jar (biblioteca para o e2e-tests)
         working-directory: antifraud-service
-        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests 2>&1 | tee mvn.log
 
       - name: Install transfer-service jar (biblioteca para o e2e-tests)
         working-directory: transfer-service
-        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests 2>&1 | tee mvn.log
 
       - name: Install notification-service jar (biblioteca para o e2e-tests)
         working-directory: notification-service
-        run: chmod +x mvnw && ./mvnw -B install -DskipTests
+        run: chmod +x mvnw && ./mvnw -B install -DskipTests 2>&1 | tee mvn.log
 
       - name: TransferSagaHappyPathIT + TransferSagaCompensationIT
         working-directory: e2e-tests
-        run: mvn -B verify
+        run: mvn -B verify 2>&1 | tee mvn.log
+
+      - name: Anotar falhas de teste
+        if: failure()
+        run: |
+          for dir in account-service antifraud-service transfer-service notification-service e2e-tests; do
+            bash .github/scripts/anotar-falhas-de-teste.sh "$dir"
+          done
 
       - name: Publish test reports
         if: always()
